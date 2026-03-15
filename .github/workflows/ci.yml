@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: '.'
+          severity: warning
+
+      - name: PSScriptAnalyzer
+        uses: microsoft/psscriptanalyzer-action@v1.1
+        with:
+          path: ./openclaw-migrate.ps1
+
+  test-macos:
+    name: Test macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make executable
+        run: chmod +x openclaw-migrate.sh
+
+      - name: Test version
+        run: ./openclaw-migrate.sh version
+
+      - name: Test doctor
+        run: ./openclaw-migrate.sh doctor || true
+
+      - name: Test export dry-run
+        run: ./openclaw-migrate.sh export --dry-run || true
+
+  test-linux:
+    name: Test Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make executable
+        run: chmod +x openclaw-migrate.sh
+
+      - name: Test version
+        run: ./openclaw-migrate.sh version
+
+      - name: Test doctor
+        run: ./openclaw-migrate.sh doctor || true
+
+  test-windows:
+    name: Test Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test version
+        shell: pwsh
+        run: .\openclaw-migrate.ps1 version
+
+      - name: Test doctor
+        shell: pwsh
+        run: .\openclaw-migrate.ps1 doctor
+        continue-on-error: true
+
+  release:
+    name: Create Release
+    needs: [lint, test-macos, test-linux, test-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: echo "VERSION=$(cat VERSION)" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: v${{ steps.version.outputs.VERSION }}
+          body_path: CHANGELOG.md
+          files: |
+            openclaw-migrate.sh
+            openclaw-migrate.ps1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

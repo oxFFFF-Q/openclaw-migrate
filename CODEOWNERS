@@ -1,0 +1,21 @@
+# CODEOWNERS - Define code ownership for this repository
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owners
+* @oxFFFF-Q
+
+# Shell scripts
+*.sh @oxFFFF-Q
+
+# PowerShell scripts
+*.ps1 @oxFFFF-Q
+
+# Documentation
+*.md @oxFFFF-Q
+docs/ @oxFFFF-Q
+
+# GitHub Actions
+.github/ @oxFFFF-Q
+
+# Security
+SECURITY.md @oxFFFF-Q

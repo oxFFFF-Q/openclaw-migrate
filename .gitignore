@@ -1,24 +1,55 @@
-# Compiled class file
-*.class
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
-# Log file
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# Test/Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.orig
+
+# Logs
 *.log
+logs/
 
-# BlueJ files
-*.ctxt
+# Node.js (if using npm for distribution)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
 
-# Mobile Tools for Java (J2ME)
-.mtj.tmp/
+# Distribution
+dist/
+build/
 
-# Package Files #
-*.jar
-*.war
-*.nar
-*.ear
-*.zip
-*.tar.gz
-*.rar
+# Sensitive data (should never be committed)
+.env
+.env.*
+secrets.json
+*.pem
+*.key
 
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
-hs_err_pid*
-replay_pid*
+# Test exports (user-generated)
+openclaw-export-*.tar.gz
+openclaw-backup-*.tar.gz
+
+# Temporary directories
+tmp/
+temp/

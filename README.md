@@ -16,7 +16,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-Bash-green.svg)](openclaw-migrate.sh)
-[![Version](https://img.shields.io/badge/Version-1.1.0-purple.svg)]()
+[![Version](https://img.shields.io/badge/Version-1.2.0-purple.svg)]()
 
 ---
 
@@ -25,6 +25,7 @@
 - 🔄 **三种迁移模式** — replicate / full / skills，按需选择
 - 🖥️ **全平台覆盖** — macOS (Intel/Apple Silicon) · Linux (Debian/RHEL/Arch/Alpine) · Windows (MSYS/WSL)
 - 🔧 **智能依赖管理** — 自动检测并安装 Node.js 和 OpenClaw
+- 📦 **自动安装插件** — `--install-deps` 一键安装缺失的 OpenClaw 插件（v1.2.0 新增）
 - 🔒 **安全备份** — 导入前自动备份现有配置，可回滚
 - 📋 **导出清单** — 自动生成 `manifest.json`，记录来源环境和版本信息
 - 🩺 **内置诊断** — `doctor` 命令一键检查系统健康状态
@@ -99,6 +100,9 @@ chmod +x openclaw-migrate.sh
 
 # 静默导入（跳过确认）
 ./openclaw-migrate.sh import export.tar.gz --force
+
+# 导入并自动安装缺失的插件（v1.2.0 新增）
+./openclaw-migrate.sh import export.tar.gz --install-deps
 
 # 不备份现有配置
 ./openclaw-migrate.sh import export.tar.gz --no-backup

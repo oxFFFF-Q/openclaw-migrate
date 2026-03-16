@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-03-16
+
+### Added
+- 📦 `--install-deps` flag for import command - auto-install missing OpenClaw plugins
+- 🔍 `check_plugin_exists()` function to detect installed plugins
+- 🔧 `install_plugin()` function to install missing plugins
+- 🤖 `install_missing_plugins()` to batch install all missing dependencies
+
+### Changed
+- Import command now supports optional dependency auto-installation
+- Better error messages when plugins are missing
+
 ## [1.1.0] - 2026-03-15
 
 ### Added

@@ -17,7 +17,7 @@ set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────────────────
 
-readonly VERSION="1.1.0"
+readonly VERSION="1.2.0"
 readonly SCRIPT_NAME="openclaw-migrate"
 readonly REPO_URL="https://github.com/oxFFFF-Q/openclaw-migrate"
 readonly REPO_RAW_URL="https://raw.githubusercontent.com/oxFFFF-Q/openclaw-migrate/main"
@@ -437,15 +437,94 @@ EOF
 
 # ── Import Functions ───────────────────────────────────────────────────────
 
+# Check if plugin exists
+check_plugin_exists() {
+  local plugin_name="$1"
+  
+  # Check if plugin is installed
+  if openclaw plugins list 2>/dev/null | grep -q "$plugin_name"; then
+    return 0
+  fi
+  return 1
+}
+
+# Install missing plugin
+install_plugin() {
+  local plugin_name="$1"
+  
+  info "Installing plugin: $plugin_name..."
+  
+  if openclaw plugins install "$plugin_name" 2>&1; then
+    ok "Plugin installed: $plugin_name"
+    return 0
+  else
+    warn "Failed to install plugin: $plugin_name"
+    return 1
+  fi
+}
+
+# Detect and install missing plugins from config
+install_missing_plugins() {
+  local config_file="$1"
+  local missing_plugins=()
+  
+  if [ ! -f "$config_file" ]; then
+    return 0
+  fi
+  
+  # Extract plugin names from config using grep
+  local plugins=$(grep -oE '"openclaw-[a-z0-9-]+"' "$config_file" 2>/dev/null | sort -u | tr -d '"')
+  
+  if [ -z "$plugins" ]; then
+    info "No plugin dependencies found in config"
+    return 0
+  fi
+  
+  info "Checking plugin dependencies..."
+  
+  for plugin in $plugins; do
+    if ! check_plugin_exists "$plugin"; then
+      missing_plugins+=("$plugin")
+    else
+      ok "Plugin already installed: $plugin"
+    fi
+  done
+  
+  if [ ${#missing_plugins[@]} -eq 0 ]; then
+    ok "All required plugins are installed"
+    return 0
+  fi
+  
+  echo
+  warn "Missing plugins: ${missing_plugins[*]}"
+  
+  read -rp "Install missing plugins? [Y/n] " ans
+  if [[ "$ans" =~ ^[Nn] ]]; then
+    warn "Skipping plugin installation. Configuration may be invalid."
+    return 1
+  fi
+  
+  local failed=0
+  for plugin in "${missing_plugins[@]}"; do
+    if ! install_plugin "$plugin"; then
+      failed=1
+    fi
+  done
+  
+  return $failed
+}
+
 do_import() {
   local archive="${1:-}"
   local force=false
   local no_backup=false
+  local install_deps=false
   
   for arg in "$@"; do
     case "$arg" in
       --force|-f)     force=true ;;
       --no-backup)    no_backup=true ;;
+      --install-deps) install_deps=true ;;
       --help)
         cat <<EOF
 Import OpenClaw configuration from archive
@@ -455,11 +534,12 @@ Usage: $SCRIPT_NAME import <archive.tar.gz> [options]
 Options:
   --force, -f      Skip confirmation prompts
   --no-backup      Don't backup existing configuration
+  --install-deps   Automatically install missing plugins
   --help           Show this help
 
 Examples:
   $SCRIPT_NAME import openclaw-export-20260315.tar.gz
-  $SCRIPT_NAME import export.tar.gz --force
+  $SCRIPT_NAME import export.tar.gz --force --install-deps
 EOF
         return 0
         ;;
@@ -545,6 +625,17 @@ EOF
   if [ -f "$exportdir/openclaw.json" ]; then
     cp "$exportdir/openclaw.json" "$OPENCLAW_DIR/openclaw.json"
     ok "openclaw.json"
+    
+    # Install missing plugins if requested
+    if $install_deps; then
+      echo
+      info "Installing missing plugins..."
+      if install_missing_plugins "$OPENCLAW_DIR/openclaw.json"; then
+        ok "All plugins installed successfully"
+      else
+        warn "Some plugins could not be installed. Run 'openclaw doctor' for details."
+      fi
+    fi
   fi
   
   # Workspace
@@ -730,6 +821,7 @@ ${BOLD}Export Options:${NC}
 ${BOLD}Import Options:${NC}
   --force, -f       Skip confirmation prompts
   --no-backup       Don't backup existing config
+  --install-deps    Automatically install missing plugins
 
 ${BOLD}Examples:${NC}
   # Export configuration

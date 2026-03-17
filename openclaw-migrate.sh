@@ -17,7 +17,7 @@ set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────────────────
 
-readonly VERSION="1.5.2"
+readonly VERSION="1.5.3"
 readonly SCRIPT_NAME="openclaw-migrate"
 readonly REPO_URL="https://github.com/oxFFFF-Q/openclaw-migrate"
 readonly REPO_RAW_URL="https://raw.githubusercontent.com/oxFFFF-Q/openclaw-migrate/main"
@@ -1474,11 +1474,12 @@ EOF
   
   display_import_summary "$exportdir/manifest.json" "$exportdir"
   
+  # 如果之前没有选择合并策略（新系统场景），才询问是否导入
   if $interactive; then
-    echo -e "${BOLD}? 是否导入?${NC}"
-    echo "  ❯ 是，导入并安装缺失插件"
-    echo "    是，仅导入配置"
-    echo "    否，取消"
+    echo -e "${BOLD}? 确认导入?${NC}"
+    echo "  ❯ 1) 是，导入并安装缺失插件"
+    echo "    2) 是，仅导入配置"
+    echo "    3) 否，取消"
     echo
     
     local choice=""
@@ -1597,7 +1598,12 @@ EOF
       if [ -e "$item" ]; then
         local item_name=$(basename "$item")
         rm -rf "$WORKSPACE_DIR/$item_name" 2>/dev/null || true
-        cp -R "$item" "$WORKSPACE_DIR/$item_name/"
+        # 修复：如果是目录，复制到目录内；如果是文件，直接复制
+        if [ -d "$item" ]; then
+          cp -R "$item" "$WORKSPACE_DIR/"
+        else
+          cp "$item" "$WORKSPACE_DIR/"
+        fi
       fi
     done
     ok "Workspace files"

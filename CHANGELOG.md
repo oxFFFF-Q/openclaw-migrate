@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-03-17
+
+### Added (关键修复！)
+- 🧹 **智能路径转换**: 自动将 macOS 路径转换为当前系统路径
+  - `/Users/eva/.openclaw/...` → `/home/ubuntu/.openclaw/...`
+  - 支持跨平台一键迁移
+- 🔄 **自动检测源/目标系统**: 从 manifest 或配置文件推断
+
+### Changed
+- 路径转换在导入时自动执行，无需手动 doctor --fix
+
 ## [1.6.0] - 2026-03-17
 
 ### Added (A+B+C 完整方案)

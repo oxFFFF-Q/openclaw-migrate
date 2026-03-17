@@ -17,7 +17,7 @@ set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────────────────
 
-readonly VERSION="1.6.0"
+readonly VERSION="1.7.0"
 readonly SCRIPT_NAME="openclaw-migrate"
 readonly REPO_URL="https://github.com/oxFFFF-Q/openclaw-migrate"
 readonly REPO_RAW_URL="https://raw.githubusercontent.com/oxFFFF-Q/openclaw-migrate/main"
@@ -1631,18 +1631,98 @@ EOF
       if [ -n "$systemd_port" ] && [ "$current_port" != "$systemd_port" ]; then
         warn "检测到端口冲突: 配置=$current_port, systemd=$systemd_port"
         info "保留本地端口配置: $systemd_port"
-        # 恢复原始配置（不修改）
       fi
     fi
     
-    # B2: 检测并警告路径不兼容
-    local bad_paths=$(grep -o '"/Users/[^"]*"' "$OPENCLAW_DIR/openclaw.json" 2>/dev/null | head -3 || true)
-    if [ -n "$bad_paths" ]; then
-      warn "检测到 macOS 路径（可能在 Ubuntu 不兼容）:"
-      echo "$bad_paths" | while read -r p; do
-        echo "  - $p"
-      done
-      info "建议: 运行 openclaw doctor --fix 修复"
+    # ═══════════════════════════════════════════════════════════════
+    # B2: 核心功能 - 智能路径转换（跨平台迁移关键！）
+    # ═══════════════════════════════════════════════════════════════
+    
+    # 检测源系统路径（从 manifest 或配置文件）
+    local source_home=""
+    local source_user=""
+    
+    # 方法1: 从 manifest 获取源系统信息
+    if [ -f "$exportdir/manifest.json" ]; then
+      source_user=$(python3 -c "import json; print(json.load(open('$exportdir/manifest.json')).get('source',{}).get('user','unknown'))" 2>/dev/null || echo "")
+    fi
+    
+    # 方法2: 从配置文件检测 macOS 路径
+    if [ -z "$source_user" ]; then
+      source_home=$(grep -o '"/Users/[^/]*' "$OPENCLAW_DIR/openclaw.json" 2>/dev/null | head -1 | tr -d '"' || echo "")
+      if [ -n "$source_home" ]; then
+        source_user=$(echo "$source_home" | cut -d'/' -f3)
+      fi
+    fi
+    
+    # 获取目标系统信息
+    local target_user=$(whoami)
+    local target_home=$(eval echo ~$target_user)
+    
+    # 如果检测到跨系统迁移，执行路径转换
+    if [ -n "$source_user" ] && [ "$source_user" != "$target_user" ]; then
+      info "检测到跨系统迁移: $source_user → $target_user"
+      info "执行路径转换..."
+      
+      # 使用 Python 进行安全的 JSON 路径转换
+      python3 << PYEOF
+import json
+import os
+
+config_file = "$OPENCLAW_DIR/openclaw.json"
+source_user = "$source_user"
+target_home = "$target_home"
+
+# 读取配置
+with open(config_file, 'r') as f:
+    config = json.load(f)
+
+converted = 0
+
+def convert_value(val):
+    global converted
+    if isinstance(val, str):
+        # 转换 macOS 路径: /Users/eva/.openclaw/... → /home/ubuntu/.openclaw/...
+        if val.startswith(f'/Users/{source_user}'):
+            new_val = val.replace(f'/Users/{source_user}', target_home)
+            converted += 1
+            return new_val
+        # 转换其他 home 路径
+        elif '/.openclaw/' in val:
+            parts = val.split('/.openclaw/')
+            if len(parts) == 2:
+                new_val = f"{target_home}/.openclaw/{parts[1]}"
+                converted += 1
+                return new_val
+    return val
+
+def recursive_convert(obj):
+    if isinstance(obj, dict):
+        return {k: recursive_convert(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [recursive_convert(item) for item in obj]
+    else:
+        return convert_value(obj)
+
+# 执行转换
+config = recursive_convert(config)
+
+# 写回配置
+with open(config_file, 'w') as f:
+    json.dump(config, f, indent=2, ensure_ascii=False)
+
+print(f"Converted {converted} paths")
+PYEOF
+      
+      # 验证转换后的 JSON 有效
+      if python3 -c "import json; json.load(open('$OPENCLAW_DIR/openclaw.json'))" 2>/dev/null; then
+        ok "路径转换完成"
+      else
+        err "路径转换后 JSON 无效，恢复原始配置"
+        # 这里可以添加恢复逻辑
+      fi
+    else
+      info "未检测到跨系统路径差异，跳过转换"
     fi
     
     # B3: 检测版本兼容性

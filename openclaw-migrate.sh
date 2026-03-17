@@ -1418,6 +1418,7 @@ EOF
   fi
   
   # 🧩 已安装：显示合并选项
+  local merge_strategy=""
   if [ "$openclaw_installed" = true ] && $interactive; then
     echo
     info "检测到已有 OpenClaw 配置"
@@ -1434,14 +1435,16 @@ EOF
       read -rp "> " merge_choice
       case "$merge_choice" in
         1|"智能合并"|"1")
-          # 智能合并模式
+          merge_strategy="smart"
+          install_deps=true
           ;;
         2|"完全替换"|"2")
+          merge_strategy="replace"
           install_deps=true
           ;;
         3|"保留本地"|"3")
+          merge_strategy="keep-local"
           install_deps=true
-          # 通过 --merge=keep-local 处理
           ;;
         4|"取消"|"n"|"N")
           die "已取消"
@@ -1452,6 +1455,9 @@ EOF
           ;;
       esac
     done
+    
+    # 已选择合并策略，跳过后面的重复交互
+    interactive=false
   fi
   
   info "Extracting archive..."

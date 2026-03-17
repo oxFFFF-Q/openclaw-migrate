@@ -1364,6 +1364,96 @@ EOF
     die "Invalid archive: not a valid gzip tar file"
   fi
   
+  # 🧠 智能检测：OpenClaw 是否已安装
+  local openclaw_installed=false
+  if [ -d "$HOME/.openclaw" ] && [ -f "$HOME/.openclaw/openclaw.json" ]; then
+    openclaw_installed=true
+  fi
+  
+  # 如果未安装，询问是否安装
+  if [ "$openclaw_installed" = false ] && $interactive; then
+    echo
+    warn "未检测到 OpenClaw 配置"
+    echo
+    echo -e "${BOLD}? 检测到新系统，如何继续?${NC}"
+    echo "  ❯ 1) 一键安装 OpenClaw 并导入配置"
+    echo "    2) 仅解压缩到当前目录"
+    echo "    3) 取消"
+    echo
+    
+    local choice=""
+    while [ -z "$choice" ]; do
+      read -rp "> " choice
+      case "$choice" in
+        1|"1")
+          info "正在安装 OpenClaw..."
+          # 安装 OpenClaw
+          if command -v npm &>/dev/null; then
+            npm install -g openclaw 2>/dev/null || npm install -g @openclaw/core 2>/dev/null || {
+              # 尝试 curl 安装
+              curl -fsSL https://openclaw.ai/install.sh | bash 2>/dev/null || die "安装失败，请手动安装 OpenClaw"
+            }
+          else
+            curl -fsSL https://openclaw.ai/install.sh | bash 2>/dev/null || die "需要 Node.js，请先安装"
+          fi
+          openclaw_installed=true
+          ;;
+        2)
+          # 仅解压缩
+          local extract_dir="./openclaw-import-$(date +%Y%m%d_%H%M%S)"
+          mkdir -p "$extract_dir"
+          tar -xzf "$archive" -C "$extract_dir"
+          ok "已解压缩到: $extract_dir"
+          return 0
+          ;;
+        3|"取消"|"n"|"N")
+          die "已取消"
+          ;;
+        *)
+          echo "请输入 1, 2 或 3"
+          choice=""
+          ;;
+      esac
+    done
+  fi
+  
+  # 🧩 已安装：显示合并选项
+  if [ "$openclaw_installed" = true ] && $interactive; then
+    echo
+    info "检测到已有 OpenClaw 配置"
+    echo
+    echo -e "${BOLD}? 如何处理现有配置?${NC}"
+    echo "  ❯ 1) 智能合并（推荐） - 保留本地新增配置，合并远程更改"
+    echo "    2) 完全替换 - 用导入配置覆盖本地"
+    echo "    3) 保留本地 - 忽略导入的 openclaw.json"
+    echo "    4) 取消"
+    echo
+    
+    local merge_choice=""
+    while [ -z "$merge_choice" ]; do
+      read -rp "> " merge_choice
+      case "$merge_choice" in
+        1|"智能合并"|"1")
+          # 智能合并模式
+          ;;
+        2|"完全替换"|"2")
+          install_deps=true
+          ;;
+        3|"保留本地"|"3")
+          install_deps=true
+          # 通过 --merge=keep-local 处理
+          ;;
+        4|"取消"|"n"|"N")
+          die "已取消"
+          ;;
+        *)
+          echo "请输入 1, 2, 3 或 4"
+          merge_choice=""
+          ;;
+      esac
+    done
+  fi
+  
   info "Extracting archive..."
   
   local tmpdir

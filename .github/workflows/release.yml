@@ -1,0 +1,142 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.4.0)'
+        required: true
+        type: string
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=${VERSION#v}" >> $GITHUB_OUTPUT
+          echo "Creating release for version: $VERSION"
+
+      - name: Create release archive
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          ARCHIVE_NAME="openclaw-migrate-v${VERSION}.tar.gz"
+          
+          # Create archive with all necessary files
+          tar -czf "$ARCHIVE_NAME" \
+            openclaw-migrate.sh \
+            openclaw-migrate.ps1 \
+            README.md \
+            README_CN.md \
+            CHANGELOG.md \
+            LICENSE \
+            VERSION \
+            .gitignore \
+            CONTRIBUTING.md \
+            SECURITY.md \
+            CODEOWNERS
+            
+          echo "Created archive: $ARCHIVE_NAME"
+          ls -la "$ARCHIVE_NAME"
+
+      - name: Generate SHA256 checksum
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          ARCHIVE_NAME="openclaw-migrate-v${VERSION}.tar.gz"
+          CHECKSUM_NAME="openclaw-migrate-v${VERSION}.sha256"
+          
+          sha256sum "$ARCHIVE_NAME" > "$CHECKSUM_NAME"
+          cat "$CHECKSUM_NAME"
+
+      - name: Update versions.json
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          
+          # Create or update versions.json
+          if [ -f versions.json ]; then
+            # Update existing - add new version entry
+            python3 << 'PYTHON_SCRIPT'
+import json
+import sys
+from datetime import datetime, timezone, timedelta
+
+tz = timezone(timedelta(hours=8))
+version = "$VERSION"
+
+with open('versions.json', 'r') as f:
+    data = json.load(f)
+
+# Check if version already exists
+exists = any(v['version'] == version for v in data.get('versions', []))
+if not exists:
+    new_entry = {
+        "version": version,
+        "date": datetime.now(tz).strftime('%Y-%m-%d'),
+        "download_url": f"https://github.com/oxFFFF-Q/openclaw-migrate/releases/download/v{version}/openclaw-migrate-v{version}.tar.gz",
+        "checksum_url": f"https://github.com/oxFFFF-Q/openclaw-migrate/releases/download/v{version}/openclaw-migrate-v{version}.sha256",
+        "notes": f"Release v{version}"
+    }
+    data['versions'].insert(0, new_entry)
+    data['latest'] = version
+    
+    with open('versions.json', 'w') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    print(f"Added version {version} to versions.json")
+else:
+    print(f"Version {version} already exists")
+PYTHON_SCRIPT
+          else
+            # Create new versions.json
+            python3 << 'PYTHON_SCRIPT'
+import json
+from datetime import datetime, timezone, timedelta
+
+tz = timezone(timedelta(hours=8))
+version = "$VERSION"
+
+data = {
+    "latest": version,
+    "versions": [
+        {
+            "version": version,
+            "date": datetime.now(tz).strftime('%Y-%m-%d'),
+            "download_url": f"https://github.com/oxFFFF-Q/openclaw-migrate/releases/download/v{version}/openclaw-migrate-v{version}.tar.gz",
+            "checksum_url": f"https://github.com/oxFFFF-Q/openclaw-migrate/releases/download/v{version}/openclaw-migrate-v{version}.sha256",
+            "notes": f"Release v{version}"
+        }
+    ]
+}
+
+with open('versions.json', 'w') as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+print(f"Created versions.json with version {version}")
+PYTHON_SCRIPT
+          fi
+
+      - name: Upload release artifacts
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Release v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            openclaw-migrate-v${{ steps.version.outputs.version }}.tar.gz
+            openclaw-migrate-v${{ steps.version.outputs.version }}.sha256
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

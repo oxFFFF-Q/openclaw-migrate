@@ -1,0 +1,19 @@
+{
+  "latest": "1.4.0",
+  "versions": [
+    {
+      "version": "1.4.0",
+      "date": "2026-03-17",
+      "download_url": "https://github.com/oxFFFF-Q/openclaw-migrate/releases/download/v1.4.0/openclaw-migrate-v1.4.0.tar.gz",
+      "checksum_url": "https://github.com/oxFFFF-Q/openclaw-migrate/releases/download/v1.4.0/openclaw-migrate-v1.4.0.sha256",
+      "notes": "Release v1.4.0 - 添加版本管理功能"
+    },
+    {
+      "version": "1.3.0",
+      "date": "2026-03-15",
+      "download_url": "https://github.com/oxFFFF-Q/openclaw-migrate/releases/download/v1.3.0/openclaw-migrate-v1.3.0.tar.gz",
+      "checksum_url": "https://github.com/oxFFFF-Q/openclaw-migrate/releases/download/v1.3.0/openclaw-migrate-v1.3.0.sha256",
+      "notes": "Release v1.3.0"
+    }
+  ]
+}

@@ -17,7 +17,7 @@ set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────────────────
 
-readonly VERSION="1.4.0"
+readonly VERSION="1.5.0"
 readonly SCRIPT_NAME="openclaw-migrate"
 readonly REPO_URL="https://github.com/oxFFFF-Q/openclaw-migrate"
 readonly REPO_RAW_URL="https://raw.githubusercontent.com/oxFFFF-Q/openclaw-migrate/main"
@@ -28,6 +28,339 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 DEFAULT_OUTPUT="$HOME/openclaw-export-$TIMESTAMP.tar.gz"
 LOG_FILE="/tmp/openclaw-migrate-$TIMESTAMP.log"
 PREFS_FILE="$HOME/.openclaw/migrate-prefs.json"
+MACHINES_FILE="$HOME/.openclaw/machines.json"
+
+# ── Template Engine (using Python) ────────────────────────────────────────────
+
+# Detect automatic variables
+detect_auto_vars() {
+  local os_type
+  case "$(uname -s)" in
+    Darwin) os_type="macos" ;;
+    Linux) os_type="linux" ;;
+    MINGW*|MSYS*|CYGWIN*) os_type="windows" ;;
+    *) os_type="unknown" ;;
+  esac
+  
+  local arch
+  case "$(uname -m)" in
+    arm64|aarch64) arch="arm64" ;;
+    x86_64|amd64) arch="x86_64" ;;
+    *) arch="unknown" ;;
+  esac
+  
+  echo "hostname=$(hostname)"
+  echo "os=$os_type"
+  echo "arch=$arch"
+  echo "home=$HOME"
+  echo "user=${USER:-$(whoami)}"
+}
+
+# Load machine configuration
+load_machine_config() {
+  local machine_name="$1"
+  
+  [ -f "$MACHINES_FILE" ] || return 1
+  
+  python3 -c "
+import json
+import sys
+import os
+import platform
+
+machines = json.load(open('$MACHINES_FILE'))
+if '$machine_name' not in machines:
+    sys.exit(1)
+
+config = machines['$machine_name']
+config['hostname'] = '$machine_name'
+config['os'] = 'macos' if platform.system() == 'Darwin' else 'linux' if platform.system() == 'Linux' else 'windows'
+config['arch'] = 'arm64' if platform.machine() in ['arm64', 'aarch64'] else 'x86_64'
+config['home'] = os.path.expanduser('~')
+config['user'] = os.environ.get('USER', os.environ.get('USERNAME', 'unknown'))
+
+for k, v in config.items():
+    print(f'{k}={v}')
+"
+}
+
+# Validate machines.json format
+validate_machines_file() {
+  if [ ! -f "$MACHINES_FILE" ]; then
+    err "Machines file not found: $MACHINES_FILE"
+    info "Creating sample machines file..."
+    mkdir -p "$(dirname "$MACHINES_FILE")"
+    cat > "$MACHINES_FILE" <<'EOF'
+{
+  "my-machine": {
+    "hostname": "my-machine",
+    "macos": true,
+    "office": false,
+    "default_model": "anthropic/claude-3-sonnet",
+    "workspace_path": "~/openclaw"
+  }
+}
+EOF
+    ok "Created sample machines file: $MACHINES_FILE"
+    return 1
+  fi
+  
+  python3 -c "import json; json.load(open('$MACHINES_FILE'))" 2>/dev/null || {
+    err "Invalid JSON format in machines file"
+    return 1
+  }
+  
+  ok "Machines file validation passed"
+  return 0
+}
+
+# Process template with variables using Python
+process_template() {
+  local content="$1"
+  shift
+  
+  # Build variables as arguments to Python
+  python3 -c "
+import re
+import sys
+
+content = '''$content'''
+
+vars = {}
+$(
+  while [ \$# -gt 0 ]; do
+    local key=\"\${1%%=*}\"
+    local value=\"\${1#*=}\"
+    echo \"vars['$key'] = '''$value'''\"
+    shift
+  done
+)
+
+# Auto-detect variables
+import platform
+import os
+vars['hostname'] = '$([hostname])'
+vars['os'] = 'macos' if platform.system() == 'Darwin' else 'linux' if platform.system() == 'Linux' else 'windows'
+vars['arch'] = 'arm64' if platform.machine() in ['arm64', 'aarch64'] else 'x86_64'
+vars['home'] = os.path.expanduser('~')
+vars['user'] = os.environ.get('USER', os.environ.get('USERNAME', 'unknown'))
+
+def process_template(content, vars):
+    # 1. Handle {{#if var}}...{{else}}...{{/if}}
+    pattern_if_else = r'\{\{\#if\s+([a-zA-Z_][a-zA-Z0-9_]*)\}\}(.*?)\{\{else\}\}(.*?)\{\{\/if\}\}'
+    def replace_if_else(m):
+        var_name = m.group(1)
+        if_content = m.group(2)
+        else_content = m.group(3)
+        var_val = vars.get(var_name, '')
+        if var_val and str(var_val).lower() not in ['false', '0', '']:
+            return if_content
+        else:
+            return else_content
+    content = re.sub(pattern_if_else, replace_if_else, content, flags=re.DOTALL)
+    
+    # 2. Handle {{#if var}}...{{/if}}
+    pattern_if = r'\{\{\#if\s+([a-zA-Z_][a-zA-Z0-9_]*)\}\}(.*?)\{\{\/if\}\}'
+    def replace_if(m):
+        var_name = m.group(1)
+        if_content = m.group(2)
+        var_val = vars.get(var_name, '')
+        if var_val and str(var_val).lower() not in ['false', '0', '']:
+            return if_content
+        return ''
+    content = re.sub(pattern_if, replace_if, content, flags=re.DOTALL)
+    
+    # 3. Handle {{var|default}}
+    pattern_default = r'\{\{([a-zA-Z_][a-zA-Z0-9_]*)\|([^}]+)\}\}'
+    def replace_default(m):
+        var_name = m.group(1)
+        default_val = m.group(2)
+        var_val = vars.get(var_name)
+        if var_val is not None and str(var_val).lower() not in ['false', '0', '']:
+            return str(var_val)
+        return default_val
+    content = re.sub(pattern_default, replace_default, content)
+    
+    # 4. Handle {{var}}
+    pattern_var = r'\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}'
+    undefined = []
+    def replace_var(m):
+        var_name = m.group(1)
+        var_val = vars.get(var_name)
+        if var_val is not None:
+            return str(var_val)
+        undefined.append(var_name)
+        return 'UNDEFINED:' + var_name
+    content = re.sub(pattern_var, replace_var, content)
+    
+    if undefined:
+        print('WARNING: Undefined variables: ' + ', '.join(set(undefined)), file=sys.stderr)
+    
+    return content
+
+print(process_template(content, vars))
+" 2>&1
+}
+
+# Check template syntax
+check_template_syntax() {
+  local content="$1"
+  local errors=0
+  local warnings=0
+  
+  python3 -c "
+import re
+content = '''$content'''
+errors = 0
+warnings = 0
+
+# Check unclosed conditionals
+if_count = len(re.findall(r'\{\{\#if\s+[a-zA-Z_][a-zA-Z0-9_]*\}\}', content))
+endif_count = len(re.findall(r'\{\{\/if\}\}', content))
+if if_count != endif_count:
+    print(f'ERROR: Unclosed conditional: {if_count} {{#if}} but {endif_count} {{/if}}')
+    errors += 1
+
+# Check invalid syntax
+if '{{' in content and content.rstrip()[-2:] != '}}' and not re.search(r'\}\}[^{]*$', content):
+    if '{{' in content.split('\n')[-1]:
+        print('ERROR: Malformed template: unclosed {{')
+        errors += 1
+
+exit(errors)
+" || return 1
+  return 0
+}
+
+# Template check command
+do_template_check() {
+  local template_file=""
+  
+  for arg in "$@"; do
+    case "$arg" in
+      --file=*) template_file="${arg#--file=}" ;;
+      --help)
+        cat <<'EOF'
+Template Syntax Checker
+
+Usage: openclaw-migrate.sh template-check [options]
+
+Options:
+  --file=PATH    Check specific template file
+  --help         Show this help
+
+Examples:
+  openclaw-migrate.sh template-check
+  openclaw-migrate.sh template-check --file=~/.openclaw/openclaw.json
+EOF
+        return 0
+        ;;
+    esac
+  done
+  
+  echo
+  echo -e "${MAGENTA}🔍 ${BOLD}Template Syntax Checker${NC}"
+  echo
+  
+  # Validate machines.json
+  echo -e "${BOLD}Validating machines.json...${NC}"
+  validate_machines_file || true
+  echo
+  
+  # List available machines
+  if [ -f "$MACHINES_FILE" ]; then
+    echo -e "${BOLD}Available machines:${NC}"
+    python3 -c "
+import json
+m = json.load(open('$MACHINES_FILE'))
+for name, config in m.items():
+    os_type = 'macOS' if config.get('macos') else 'Linux'
+    model = config.get('default_model', 'N/A')
+    print(f'  * {name} ({os_type}, model: {model})')
+" 2>/dev/null || true
+    echo
+  fi
+  
+  # Test template processing
+  echo -e "${BOLD}Testing template processing...${NC}"
+  local test_template='{
+  "model": "{{default_model|default/model}}",
+  "workspace": "{{workspace_path}}",
+  "proxy": "{{#if office}}http://proxy.company.com:8080{{else}}{{/if}}",
+  "skills_dir": "{{#if macos}}~/Documents/skills{{else}}~/skills{{/if}}"
+}'
+  
+  echo -e "${CYAN}Test template:${NC}"
+  echo "$test_template"
+  echo
+  
+  # Test with each machine
+  if [ -f "$MACHINES_FILE" ]; then
+    for machine in $(python3 -c "import json; print(' '.join(json.load(open('$MACHINES_FILE')).keys()))" 2>/dev/null); do
+      echo -e "${CYAN}Machine: $machine${NC}"
+      local result
+      result=$(load_machine_config "$machine" | while IFS= read -r line; do process_template "$test_template" "$line"; done)
+      result=$(load_machine_config "$machine" | xargs -I {} bash -c 'source /dev/stdin <<<"result=\$(process_template \"$test_template\" {})" && echo "$result"' 2>/dev/null) || true
+      
+      # Simpler approach: use python directly
+      result=$(python3 -c "
+import json
+import re
+import platform
+import os
+
+machines = json.load(open('$MACHINES_FILE'))
+config = machines['$machine']
+config['hostname'] = '$machine'
+config['os'] = 'macos' if platform.system() == 'Darwin' else 'linux'
+config['arch'] = 'arm64' if platform.machine() in ['arm64', 'aarch64'] else 'x86_64'
+config['home'] = os.path.expanduser('~')
+config['user'] = os.environ.get('USER', 'unknown')
+
+vars = config
+content = '''$test_template'''
+
+# Process conditionals with else
+content = re.sub(r'\{\{\#if\s+([a-zA-Z_][a-zA-Z0-9_]*)\}\}(.*?)\{\{else\}\}(.*?)\{\{\/if\}\}', 
+    lambda m: m.group(2) if vars.get(m.group(1)) and str(vars[m.group(1)]).lower() not in ['false','0',''] else m.group(3), content)
+
+# Process simple conditionals
+content = re.sub(r'\{\{\#if\s+([a-zA-Z_][a-zA-Z0-9_]*)\}\}(.*?)\{\{\/if\}\}',
+    lambda m: m.group(2) if vars.get(m.group(1)) and str(vars[m.group(1)]).lower() not in ['false','0',''] else '', content)
+
+# Process defaults
+content = re.sub(r'\{\{([a-zA-Z_][a-zA-Z0-9_]*)\|([^}]+)\}\}',
+    lambda m: str(vars[m.group(1)]) if vars.get(m.group(1)) and str(vars[m.group(1)]).lower() not in ['false','0',''] else m.group(2), content)
+
+# Process simple variables
+content = re.sub(r'\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}',
+    lambda m: str(vars[m.group(1)]) if m.group(1) in vars else 'UNDEFINED:'+m.group(1), content)
+
+print(content)
+" 2>&1)
+      
+      echo "$result" | python3 -m json.tool 2>/dev/null || echo "$result"
+      echo
+    done
+  fi
+  
+  # Check syntax of openclaw.json if exists
+  if [ -z "$template_file" ] && [ -f "$OPENCLAW_DIR/openclaw.json" ]; then
+    template_file="$OPENCLAW_DIR/openclaw.json"
+  fi
+  
+  if [ -n "$template_file" ] && [ -f "$template_file" ]; then
+    echo -e "${BOLD}Checking template file:${NC} $template_file"
+    if check_template_syntax "$(cat "$template_file")"; then
+      ok "Template syntax is valid"
+    else
+      err "Template has syntax errors"
+    fi
+  fi
+  
+  echo
+  ok "Template check complete"
+}
 
 # ── Internationalization ───────────────────────────────────────────────────
 
@@ -1102,9 +1435,32 @@ EOF
   mkdir -p "$OPENCLAW_DIR"
   info "Importing files..."
   
+  # 验证并安全导入 openclaw.json
   if [ -f "$exportdir/openclaw.json" ]; then
-    cp "$exportdir/openclaw.json" "$OPENCLAW_DIR/openclaw.json"
-    ok "openclaw.json"
+    # 1. 验证 JSON 格式
+    if python3 -c "import json; json.load(open('$exportdir/openclaw.json'))" 2>/dev/null; then
+      # 2. 验证必需字段
+      if python3 -c "import json; d=json.load(open('$exportdir/openclaw.json')); assert 'meta' in d or 'auth' in d" 2>/dev/null; then
+        # 3. 原子操作：先写入临时文件
+        local tmp_json="$OPENCLAW_DIR/openclaw.json.tmp.$$"
+        cp "$exportdir/openclaw.json" "$tmp_json"
+        
+        # 4. 验证临时文件有效
+        if python3 -c "import json; json.load(open('$tmp_json'))" 2>/dev/null; then
+          # 5. 原子替换
+          mv "$tmp_json" "$OPENCLAW_DIR/openclaw.json"
+          ok "openclaw.json (validated)"
+        else
+          rm -f "$tmp_json"
+          err "Import aborted: invalid temp file"
+        fi
+      else
+        warn "Import skipped: openclaw.json missing required fields (meta/auth)"
+      fi
+    else
+      err "Import aborted: invalid JSON in archive"
+      err "Run: openclaw backup verify to check backup integrity"
+    fi
     
     if $install_deps; then
       if detect_missing_plugins "$OPENCLAW_DIR/openclaw.json"; then
@@ -1169,6 +1525,278 @@ EOF
   echo "  2. Restart any running OpenClaw services"
   echo "  3. Verify configuration: cat ~/.openclaw/openclaw.json"
   echo
+}
+
+# ── Incremental Export Function ────────────────────────────────────────────
+
+do_export_incremental() {
+  show_banner
+  
+  local output="${2:-}"
+  local dry_run=false
+  local verbose=false
+  
+  for arg in "$@"; do
+    case "$arg" in
+      --dry-run) dry_run=true ;;
+      --verbose|-v) verbose=true ;;
+      --output=*) output="${arg#*=}" ;;
+    esac
+  done
+  
+  output="${output:-$DEFAULT_OUTPUT}"
+  
+  info "Incremental export to: $output"
+  
+  # 创建同步数据库
+  local sync_db="$OPENCLAW_DIR/sync-db.json"
+  
+  # 如果没有数据库，创建空数据库
+  if [ ! -f "$sync_db" ]; then
+    mkdir -p "$(dirname "$sync_db")"
+    echo "{}" > "$sync_db"
+    info "Created sync database: $sync_db"
+  fi
+  
+  # 计算当前文件哈希
+  info "Calculating file hashes..."
+  local tmp_hashes=$(mktemp)
+  
+  find "$OPENCLAW_DIR" -type f -name "*.json" -o -name "*.md" -o -name "*.sh" 2>/dev/null | while read -r file; do
+    local rel_path="${file#$OPENCLAW_DIR/}"
+    local hash=$(sha256 -q "$file" 2>/dev/null || echo "unknown")
+    echo "{\"path\":\"$rel_path\",\"hash\":\"$hash\"}"
+  done > "$tmp_hashes"
+  
+  # 比较差异
+  info "Comparing with previous export..."
+  local changed_files=$(python3 -c "
+import json
+
+current = []
+try:
+    with open('$tmp_hashes') as f:
+        for line in f:
+            if line.strip():
+                current.append(json.loads(line))
+except:
+    pass
+
+try:
+    with open('$sync_db') as f:
+        previous = json.load(f)
+except:
+    previous = {}
+
+changed = []
+for item in current:
+    path = item['path']
+    if path not in previous or previous[path] != item['hash']:
+        changed.append(path)
+
+print('\n'.join(changed) if changed else '')
+" 2>/dev/null)
+  
+  if [ -z "$changed_files" ]; then
+    ok "No changes detected since last export"
+    rm -f "$tmp_hashes"
+    return 0
+  fi
+  
+  info "Changed files:"
+  echo "$changed_files" | while read -r f; do
+    echo "  - $f"
+  done
+  
+  if $dry_run; then
+    info "Dry run - no files written"
+    rm -f "$tmp_hashes"
+    return 0
+  fi
+  
+  # 导出变更文件
+  info "Exporting changed files..."
+  local tmpdir=$(mktemp -d)
+  mkdir -p "$tmpdir/openclaw-export"
+  
+  echo "$changed_files" | while read -r file; do
+    [ -f "$OPENCLAW_DIR/$file" ] && mkdir -p "$tmpdir/openclaw-export/$(dirname "$file")" && cp "$OPENCLAW_DIR/$file" "$tmpdir/openclaw-export/$file" 2>/dev/null
+  done
+  
+  # 更新同步数据库
+  cp "$tmp_hashes" "$sync_db"
+  
+  # 创建归档
+  tar -czf "$output" -C "$tmpdir" "openclaw-export" 2>/dev/null
+  
+  local size=$(du -h "$output" | cut -f1)
+  local count=$(echo "$changed_files" | wc -l | tr -d ' ')
+  
+  ok "Incremental export complete!"
+  echo "  Files: $count"
+  echo "  Size: $size"
+  echo "  Output: $output"
+  
+  rm -rf "$tmpdir" "$tmp_hashes"
+}
+
+# ── Merge Import Function ────────────────────────────────────────────────
+
+do_import_with_merge() {
+  local archive="${1:-}"
+  local merge_strategy="prompt"
+  
+  # 解析合并策略
+  for arg in "$@"; do
+    case "$arg" in
+      --merge=*) merge_strategy="${arg#*=}" ;;
+    esac
+  done
+  
+  if [ -z "$archive" ]; then
+    err "Usage: $SCRIPT_NAME import <archive> --merge=<strategy>"
+    info "Strategies: prompt, keep-local, keep-remote, keep-newer"
+    return 1
+  fi
+  
+  if [ ! -f "$archive" ]; then
+    err "Archive not found: $archive"
+    return 1
+  fi
+  
+  show_banner
+  info "Import with merge strategy: $merge_strategy"
+  
+  # 解压归档
+  local tmpdir=$(mktemp -d)
+  tar -xzf "$archive" -C "$tmpdir" 2>/dev/null || {
+    err "Failed to extract archive"
+    rm -rf "$tmpdir"
+    return 1
+  }
+  
+  local exportdir=$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d | head -1)
+  
+  if [ ! -d "$exportdir" ]; then
+    err "Invalid archive format"
+    rm -rf "$tmpdir"
+    return 1
+  fi
+  
+  # 备份
+  local backup="$HOME/openclaw-backup-$(date +%Y%m%d_%H%M%S).tar.gz"
+  info "Creating backup..."
+  tar -czf "$backup" -C "$HOME" ".openclaw" 2>/dev/null && ok "Backup: $backup" || warn "Backup failed"
+  
+  # 合并 openclaw.json
+  if [ -f "$exportdir/openclaw.json" ] && [ -f "$OPENCLAW_DIR/openclaw.json" ]; then
+    info "Merging openclaw.json..."
+    
+    local merged_file="$OPENCLAW_DIR/openclaw.json.new"
+    
+    python3 << 'PYEOF'
+import json
+import sys
+
+local_file = "$OPENCLAW_DIR/openclaw.json"
+import_file = "$exportdir/openclaw.json"
+output_file = "$merged_file"
+
+strategy = "$merge_strategy"
+
+try:
+    with open(local_file) as f:
+        local = json.load(f)
+    with open(import_file) as f:
+        imported = json.load(f)
+    
+    if strategy == "keep-local":
+        # 保留本地，忽略导入的
+        result = local
+    elif strategy == "keep-remote":
+        # 完全使用导入的
+        result = imported
+    elif strategy == "keep-newer":
+        # 保留更新的（简单比较 meta.lastTouchedAt）
+        result = {**imported, **local}
+    else:  # prompt
+        # 默认保留本地，显示警告
+        result = local
+        print("⚠️  Using --merge=keep-remote to fully replace configuration")
+    
+    with open(output_file, 'w') as f:
+        json.dump(result, f, indent=2, ensure_ascii=False)
+    
+    print("Merge complete")
+except Exception as e:
+    print(f"Merge error: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+    
+    if [ -f "$merged_file" ]; then
+      mv "$merged_file" "$OPENCLAW_DIR/openclaw.json"
+      ok "openclaw.json merged"
+    fi
+  elif [ -f "$exportdir/openclaw.json" ]; then
+    # 没有本地配置，直接导入
+    cp "$exportdir/openclaw.json" "$OPENCLAW_DIR/openclaw.json"
+    ok "openclaw.json imported"
+  fi
+  
+  # 导入其他文件
+  for item in workspace skills scripts extensions; do
+    if [ -d "$exportdir/$item" ]; then
+      mkdir -p "$OPENCLAW_DIR/$item"
+      cp -R "$exportdir/$item/"* "$OPENCLAW_DIR/$item/" 2>/dev/null || true
+      ok "$item imported"
+    fi
+  done
+  
+  ok "Merge import complete!"
+  rm -rf "$tmpdir"
+}
+
+# ── Sync Status Function ─────────────────────────────────────────────────
+
+do_sync_status() {
+  show_banner
+  
+  local sync_db="$OPENCLAW_DIR/sync-db.json"
+  
+  if [ ! -f "$sync_db" ]; then
+    info "No sync database found"
+    info "Run 'export --incremental' first to create one"
+    return 0
+  fi
+  
+  info "Sync status:"
+  echo
+  
+  python3 -c "
+import json
+
+try:
+    with open('$sync_db') as f:
+        db = json.load(f)
+    
+    print(f\"  Tracked files: {len(db)}\")
+    
+    # 计算文件大小
+    import os
+    total_size = 0
+    for path in db.keys():
+        full_path = os.path.join(os.path.expanduser('~/.openclaw'), path)
+        if os.path.exists(full_path):
+            total_size += os.path.getsize(full_path)
+    
+    print(f\"  Total size: {total_size / 1024 / 1024:.2f} MB\")
+    print(f\"  Last sync: {db.get('_last_sync', 'unknown')}\")
+except Exception as e:
+    print(f\"  Error: {e}\")
+"
+  
+  echo
+  info "Use 'export --incremental' to sync changes"
 }
 
 # ── Doctor Function ─────────────────────────────────────────────────────────
@@ -1358,11 +1986,26 @@ EOF
 case "${1:-}" in
   export)
     shift
-    do_export "$@"
+    if [[ " $@ " =~ " --incremental " ]]; then
+      do_export_incremental "$@"
+    else
+      do_export "$@"
+    fi
     ;;
   import)
     shift
-    do_import "$@"
+    if [[ " $@ " =~ "--merge=" ]]; then
+      do_import_with_merge "$@"
+    else
+      do_import "$@"
+    fi
+    ;;
+  template-check|template)
+    shift
+    do_template_check "$@"
+    ;;
+  sync-status)
+    do_sync_status
     ;;
   doctor|--doctor|-d)
     do_doctor

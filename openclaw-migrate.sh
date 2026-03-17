@@ -17,7 +17,7 @@ set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────────────────
 
-readonly VERSION="1.3.0"
+readonly VERSION="1.4.0"
 readonly SCRIPT_NAME="openclaw-migrate"
 readonly REPO_URL="https://github.com/oxFFFF-Q/openclaw-migrate"
 readonly REPO_RAW_URL="https://raw.githubusercontent.com/oxFFFF-Q/openclaw-migrate/main"
@@ -27,19 +27,103 @@ WORKSPACE_DIR="$OPENCLAW_DIR/workspace"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 DEFAULT_OUTPUT="$HOME/openclaw-export-$TIMESTAMP.tar.gz"
 LOG_FILE="/tmp/openclaw-migrate-$TIMESTAMP.log"
+PREFS_FILE="$HOME/.openclaw/migrate-prefs.json"
+
+# ── Internationalization ───────────────────────────────────────────────────
+
+LANG="${LANG:-zh}"
+
+load_prefs() {
+  if [ -f "$PREFS_FILE" ]; then
+    local saved_lang
+    saved_lang=$(python3 -c "import json; print(json.load(open('$PREFS_FILE')).get('language', 'zh'))" 2>/dev/null || echo "zh")
+    LANG="$saved_lang"
+  fi
+}
+
+save_prefs() {
+  mkdir -p "$(dirname "$PREFS_FILE")"
+  python3 -c "
+import json
+data = {}
+try:
+    with open('$PREFS_FILE', 'r') as f:
+        data = json.load(f)
+except: pass
+data['language'] = '$LANG'
+with open('$PREFS_FILE', 'w') as f:
+    json.dump(data, f)
+" 2>/dev/null || true
+}
+
+t() {
+  local key="$1"
+  case "$LANG" in
+    en)
+      case "$key" in
+        select_preset) echo "Select export preset:" ;;
+        quick) echo "Quick - Core config + skills" ;;
+        standard) echo "Standard - + extensions + multi-agent" ;;
+        full) echo "Full - Everything including memory & credentials" ;;
+        custom) echo "Custom - Choose items manually" ;;
+        custom_options) echo "Custom Export Options" ;;
+        toggle_selection) echo "Enter numbers to toggle selection (space-separated, Enter to confirm):" ;;
+        output_path) echo "Output path" ;;
+        output_default) echo "Default" ;;
+        language) echo "Language" ;;
+        confirm_export) echo "Confirm export?" ;;
+        select_language) echo "Select language:" ;;
+        press_enter) echo "Press Enter to continue" ;;
+        preview_export) echo "Will export:" ;;
+        estimated_size) echo "Estimated size" ;;
+      esac
+      ;;
+    *)
+      case "$key" in
+        select_preset) echo "选择导出预设:" ;;
+        quick) echo "快速 - 核心配置 + 自建技能" ;;
+        standard) echo "标准 - + 扩展插件 + 多 Agent" ;;
+        full) echo "完整 - 全部内容含记忆凭证" ;;
+        custom) echo "自定义 - 手动选择每一项" ;;
+        custom_options) echo "自定义导出选项" ;;
+        toggle_selection) echo "请输入序号切换选择 (空格分隔，回车确认):" ;;
+        output_path) echo "输出路径" ;;
+        output_default) echo "默认" ;;
+        language) echo "语言" ;;
+        confirm_export) echo "确认导出?" ;;
+        select_language) echo "选择语言:" ;;
+        press_enter) echo "按回车键继续" ;;
+        preview_export) echo "将导出以下内容:" ;;
+        estimated_size) echo "预估大小" ;;
+      esac
+      ;;
+  esac
+}
+
+load_prefs
 
 # ── Colors & Output ────────────────────────────────────────────────────────
 
-readonly RED='\033[0;31m'
-readonly GREEN='\033[0;32m'
-readonly YELLOW='\033[1;33m'
-readonly BLUE='\033[0;34m'
-readonly MAGENTA='\033[0;35m'
-readonly CYAN='\033[0;36m'
-readonly BOLD='\033[1m'
-readonly NC='\033[0m'
+if [ -t 1 ]; then
+  RED='\033[0;31m'
+  GREEN='\033[0;32m'
+  YELLOW='\033[1;33m'
+  BLUE='\033[0;34m'
+  MAGENTA='\033[0;35m'
+  CYAN='\033[0;36m'
+  BOLD='\033[1m'
+  NC='\033[0m'
+else
+  RED=''
+  GREEN=''
+  YELLOW=''
+  BLUE=''
+  MAGENTA=''
+  CYAN=''
+  BOLD=''
+  NC=''
+fi
 
-# Logging
 log()  { echo "[$(date +%H:%M:%S)] $*" >> "$LOG_FILE"; }
 info() { echo -e "${BLUE}ℹ${NC}  $*"; log "[INFO] $*"; }
 ok()   { echo -e "${GREEN}✔${NC}  $*"; log "[OK] $*"; }
@@ -47,21 +131,6 @@ warn() { echo -e "${YELLOW}⚠${NC}  $*"; log "[WARN] $*"; }
 err()  { echo -e "${RED}✖${NC}  $*" >&2; log "[ERROR] $*"; }
 die()  { err "$@"; exit 1; }
 
-# Progress indicator
-show_spinner() {
-  local pid=$1
-  local msg=$2
-  local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-  local i=0
-  while kill -0 $pid 2>/dev/null; do
-    i=$(( (i+1) % ${#spin} ))
-    printf "\r${CYAN}${spin:$i:1}${NC}  %s" "$msg"
-    sleep 0.1
-  done
-  printf "\r"
-}
-
-# Banner
 show_banner() {
   echo -e "${MAGENTA}"
   echo "  ____                          _____ _       _ _     _ _ "
@@ -75,8 +144,6 @@ show_banner() {
   echo "  $REPO_URL"
   echo
 }
-
-# ── System Detection ───────────────────────────────────────────────────────
 
 detect_os() {
   case "$(uname -s)" in
@@ -109,24 +176,9 @@ detect_os() {
   esac
 }
 
-detect_package_manager() {
-  case "$(detect_os)" in
-    macos-*)    echo "brew" ;;
-    debian)     echo "apt" ;;
-    redhat)     echo "yum" ;;
-    arch)       echo "pacman" ;;
-    alpine)     echo "apk" ;;
-    windows)    echo "winget" ;;
-    *)          echo "unknown" ;;
-  esac
-}
-
-# ── Dependency Management ──────────────────────────────────────────────────
-
 check_node() {
   if command -v node &>/dev/null; then
     local version=$(node -v 2>/dev/null)
-    # Check minimum version (Node 18+)
     local major=$(echo "$version" | sed 's/v//;s/\..*//')
     if [ "$major" -ge 18 ]; then
       ok "Node.js $version detected"
@@ -155,13 +207,10 @@ check_openclaw() {
     ok "OpenClaw detected: $version"
     return 0
   fi
-  
-  # Check if installed but not in PATH
   if [ -f "$OPENCLAW_DIR/bin/openclaw" ]; then
     warn "OpenClaw found at $OPENCLAW_DIR/bin/openclaw but not in PATH"
     return 0
   fi
-  
   warn "OpenClaw not found"
   return 1
 }
@@ -177,7 +226,6 @@ check_jq() {
   if command -v jq &>/dev/null; then
     return 0
   fi
-  # python3 can also parse JSON
   if command -v python3 &>/dev/null; then
     return 0
   fi
@@ -185,7 +233,6 @@ check_jq() {
   return 1
 }
 
-# Install Node.js based on OS
 install_node() {
   local os=$(detect_os)
   info "Installing Node.js..."
@@ -199,12 +246,10 @@ install_node() {
       fi
       ;;
     debian)
-      sudo apt-get update && sudo apt-get install -y nodejs npm \
-        || die "Failed to install Node.js. Try: curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -"
+      sudo apt-get update && sudo apt-get install -y nodejs npm || die "Failed to install Node.js"
       ;;
     redhat)
-      sudo yum install -y nodejs npm \
-        || die "Failed to install Node.js. Try: curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -"
+      sudo yum install -y nodejs npm || die "Failed to install Node.js"
       ;;
     arch)
       sudo pacman -S nodejs npm || die "Failed to install Node.js"
@@ -213,25 +258,21 @@ install_node() {
       sudo apk add nodejs npm || die "Failed to install Node.js"
       ;;
     *)
-      die "Cannot auto-install Node.js on this system ($os). Install manually from https://nodejs.org"
+      die "Cannot auto-install Node.js on this system ($os)"
       ;;
   esac
   
   ok "Node.js installed: $(node -v)"
 }
 
-# Install OpenClaw
 install_openclaw() {
   info "Installing OpenClaw..."
   
-  # Ensure npm is available
   if ! command -v npm &>/dev/null; then
     die "npm is required to install OpenClaw"
   fi
   
-  # Install globally
   npm install -g openclaw || {
-    # Try with sudo if permission denied
     warn "Permission denied, trying with sudo..."
     sudo npm install -g openclaw || die "Failed to install OpenClaw"
   }
@@ -239,7 +280,6 @@ install_openclaw() {
   ok "OpenClaw installed: $(openclaw --version 2>/dev/null || echo 'installed')"
 }
 
-# Calculate size of items to be exported
 calculate_export_size() {
   local total_size=0
   
@@ -250,7 +290,6 @@ calculate_export_size() {
     fi
   done
   
-  # Convert to human readable
   if [ $total_size -gt 1073741824 ]; then
     echo "$(echo "scale=1; $total_size / 1073741824" | bc)GB"
   elif [ $total_size -gt 1048576 ]; then
@@ -262,12 +301,50 @@ calculate_export_size() {
   fi
 }
 
-# Interactive export mode
+# ── Language Selection ───────────────────────────────────────────────────
+
+do_select_language() {
+  echo
+  echo -e "${MAGENTA}⚙️  ${BOLD}$(t 'language')${NC}"
+  echo
+  echo "  1) English"
+  echo "  2) 中文"
+  echo
+  
+  local choice=""
+  while [ -z "$choice" ]; do
+    printf "${CYAN}?${NC} $(t 'select_language') [1-2]: "
+    read -r choice
+    
+    case "$choice" in
+      1)
+        LANG="en"
+        save_prefs
+        ok "Language set to English"
+        ;;
+      2)
+        LANG="zh"
+        save_prefs
+        ok "语言已设为中文"
+        ;;
+      *)
+        echo -e "${RED}Invalid choice, please enter 1 or 2${NC}"
+        choice=""
+        ;;
+    esac
+  done
+  
+  echo
+  printf "${CYAN}%s${NC}\n" "$(t 'press_enter')"
+  read -r
+}
+
+# ── Interactive Export Mode ───────────────────────────────────────────────
+
 do_export_interactive() {
   local output="$DEFAULT_OUTPUT"
   local verbose=false
   
-  # Parse common args
   for arg in "$@"; do
     case "$arg" in
       --output=*) output="${arg#--output=}" ;;
@@ -279,185 +356,168 @@ do_export_interactive() {
   echo -e "${MAGENTA}📦 ${BOLD}OpenClaw 配置导出向导${NC}"
   echo
   
-  # Preset options with descriptions
   local options=(
-    "🚀 快速 - 核心配置 + 自建技能 (约 2MB)"
-    "📋 标准 - 快速 + 扩展插件 + 多 Agent (约 5MB)"
-    "🔐 完整 - 全部内容含记忆凭证 (约 50MB)"
-    "⚙️  自定义 - 手动选择每一项"
+    "1) 🚀 $(t 'quick')"
+    "2) 📋 $(t 'standard')"
+    "3) 🔐 $(t 'full')"
+    "4) ⚙️  $(t 'custom')"
   )
   
-  echo -e "${CYAN}?${NC} ${BOLD}选择导出预设:${NC}"
+  echo -e "${CYAN}?${NC} ${BOLD}$(t 'select_preset')${NC}"
+  echo
+  for opt in "${options[@]}"; do
+    echo "  $opt"
+  done
   echo
   
-  # Use select for interactive menu
-  PS3="${CYAN}❯ ${NC}"
-  select choice in "${options[@]}"; do
-    case "$REPLY" in
-      1) # Quick
+  local choice=""
+  while [ -z "$choice" ]; do
+    printf "${CYAN}?${NC} $(t 'select_preset') [1-4]: "
+    read -r choice
+    
+    case "$choice" in
+      1)
         do_export --mode=replicate --output="$output" ${verbose:+"--verbose"}
         return $?
         ;;
-      2) # Standard
+      2)
         do_export --mode=standard --output="$output" ${verbose:+"--verbose"}
         return $?
         ;;
-      3) # Full
+      3)
         do_export --mode=full --output="$output" ${verbose:+"--verbose"}
         return $?
         ;;
-      4) # Custom
-        do_export_custom "$output" "$verbose"
+      4)
+        echo
+        local custom_output=""
+        printf "${CYAN}?${NC} $(t 'output_path') ($(t 'output_default'): $DEFAULT_OUTPUT): "
+        read -r custom_output
+        if [ -z "$custom_output" ]; then
+          custom_output="$output"
+        fi
+        do_export_custom "$custom_output" "$verbose"
         return $?
         ;;
-      *) 
-        echo -e "${RED}无效选择，请输入 1-4${NC}"
+      *)
+        echo -e "${RED}Invalid choice, please enter 1-4${NC}"
+        choice=""
         ;;
     esac
   done
 }
 
-# Custom export with checkboxes
+# Custom export with toggle selection
 do_export_custom() {
   local output="$1"
   local verbose="$2"
   
-  echo
-  echo -e "${MAGENTA}⚙️  ${BOLD}自定义导出选项${NC}"
-  echo
-  echo -e "${CYAN}?${NC} ${BOLD}选择要导出的项目 (输入 y/n，多选用空格分隔):${NC}"
-  echo
-  
-  # Define export items with default states
-  local items=(
-    "core:核心配置 (openclaw.json):y"
-    "skills:自建技能 (workspace/skills):y"
-    "clawhub:ClawHub 技能 (~/.openclaw/skills):n"
-    "extensions:扩展插件 (~/.openclaw/extensions):n"
-    "agents:多 Agent 配置 (~/.openclaw/agents + workspace-*):n"
-    "memory:记忆文件 (memory/):n"
-    "credentials:凭证和密钥 (credentials):n"
+  local -A item_defaults
+  item_defaults=(
+    ["1"]=y
+    ["2"]=y
+    ["3"]=n
+    ["4"]=n
+    ["5"]=n
+    ["6"]=n
+    ["7"]=n
   )
   
-  local item_names=()
-  local item_paths=()
+  local -A item_paths
+  local -A item_names
   
-  # Show current selection state and get user input
-  for item in "${items[@]}"; do
-    local id="${item%%:*}"
-    local desc="${item#*:}"
-    local name="${desc%%:*}"
-    local default="${desc##*:}"
-    
-    item_names+=("$name")
-    
-    # Determine path based on id
-    case "$id" in
-      core)
-        item_paths+=("$OPENCLAW_DIR/openclaw.json")
-        ;;
-      skills)
-        item_paths+=("$WORKSPACE_DIR/skills")
-        ;;
-      clawhub)
-        item_paths+=("$OPENCLAW_DIR/skills")
-        ;;
-      extensions)
-        item_paths+=("$OPENCLAW_DIR/extensions")
-        ;;
-      agents)
-        item_paths+=("$OPENCLAW_DIR/agents")
-        ;;
-      memory)
-        item_paths+=("$WORKSPACE_DIR/memory")
-        ;;
-      credentials)
-        item_paths+=("$OPENCLAW_DIR/credentials")
-        ;;
-    esac
-    
-    local current_state="$default"
-    local checkbox="[ ]"
-    if [ "$default" = "y" ]; then
-      checkbox="[x]"
-    fi
-    
-    echo -e "  $checkbox $name"
-  done
+  item_paths["1"]="$OPENCLAW_DIR/openclaw.json"
+  item_names["1"]="核心配置 (openclaw.json)"
+  
+  item_paths["2"]="$WORKSPACE_DIR/skills"
+  item_names["2"]="自建技能 (workspace/skills)"
+  
+  item_paths["3"]="$OPENCLAW_DIR/skills"
+  item_names["3"]="ClawHub 技能"
+  
+  item_paths["4"]="$OPENCLAW_DIR/extensions"
+  item_names["4"]="扩展插件"
+  
+  item_paths["5"]="$OPENCLAW_DIR/agents"
+  item_names["5"]="多 Agent 配置"
+  
+  item_paths["6"]="$WORKSPACE_DIR/memory"
+  item_names["6"]="记忆文件"
+  
+  item_paths["7"]="$OPENCLAW_DIR/credentials"
+  item_names["7"]="凭证和密钥"
   
   echo
-  echo -e "${CYAN}提示:${NC} 默认选中的项目已标记 [x]"
-  echo -e "${CYAN}输入格式:${NC} 例如: y n y y n"
+  echo -e "${MAGENTA}⚙️  ${BOLD}$(t 'custom_options')${NC}"
   echo
   
-  # Get user input
-  printf "${CYAN}❯ ${NC}"
-  read -ra answers
+  show_custom_selection() {
+    for i in {1..7}; do
+      local checkbox="[ ]"
+      if [ "${item_defaults[$i]}" = "y" ]; then
+        checkbox="[✓]"
+      fi
+      echo "  $i) $checkbox ${item_names[$i]}"
+    done
+  }
   
-  # Process answers
+  show_custom_selection
+  
+  echo
+  echo -e "${CYAN}$(t 'toggle_selection')${NC}"
+  printf "${CYAN}>${NC} "
+  read -r input
+  
+  if [ -n "$input" ]; then
+    for num in $input; do
+      if [[ "$num" =~ ^[1-7]$ ]]; then
+        if [ "${item_defaults[$num]}" = "y" ]; then
+          item_defaults[$num]="n"
+        else
+          item_defaults[$num]="y"
+        fi
+      fi
+    done
+  fi
+  
   local selected=()
-  local index=0
-  for item in "${items[@]}"; do
-    local id="${item%%:*}"
-    local desc="${item#*:}"
-    local name="${desc%%:*}"
-    
-    local answer="n"
-    if [ -n "${answers[$index]:-}" ]; then
-      answer="${answers[$index]}"
+  local preview_items=()
+  
+  for i in {1..7}; do
+    if [ "${item_defaults[$i]}" = "y" ]; then
+      selected+=("$i")
+      preview_items+=("${item_paths[$i]}")
     fi
-    
-    if [[ "$answer" =~ ^[Yy] ]]; then
-      selected+=("$id")
-    fi
-    
-    index=$((index + 1))
   done
   
-  # Validate selection
   if [ ${#selected[@]} -eq 0 ]; then
     warn "未选择任何项目，取消导出"
     return 1
   fi
   
-  # Show preview
   echo
-  echo -e "${CYAN}────────────────────────────────────────${NC}"
-  echo -e "${BOLD}将导出以下内容:${NC}"
+  echo -e "${CYAN}$(t 'preview_export')${NC}"
   echo
   
-  local preview_items=()
-  for id in "${selected[@]}"; do
-    case "$id" in
-      core) echo "  ✓ 核心配置 (openclaw.json)"; preview_items+=("$OPENCLAW_DIR/openclaw.json") ;;
-      skills) echo "  ✓ 自建技能 (workspace/skills)"; preview_items+=("$WORKSPACE_DIR/skills") ;;
-      clawhub) echo "  ✓ ClawHub 技能"; preview_items+=("$OPENCLAW_DIR/skills") ;;
-      extensions) echo "  ✓ 扩展插件"; preview_items+=("$OPENCLAW_DIR/extensions") ;;
-      agents) echo "  ✓ 多 Agent 配置"; preview_items+=("$OPENCLAW_DIR/agents") ;;
-      memory) echo "  ✓ 记忆文件"; preview_items+=("$WORKSPACE_DIR/memory") ;;
-      credentials) echo "  ✓ 凭证和密钥"; preview_items+=("$OPENCLAW_DIR/credentials") ;;
-    esac
+  for i in "${selected[@]}"; do
+    echo "  ✓ ${item_names[$i]}"
   done
   
-  # Calculate size
   local size_estimate=$(calculate_export_size "${preview_items[@]}")
   echo
-  echo -e "${CYAN}预估大小:${NC} $size_estimate"
-  echo -e "${CYAN}────────────────────────────────────────${NC}"
+  echo -e "${CYAN}$(t 'estimated_size'):${NC} $size_estimate"
   echo
   
-  # Confirm
-  read -rp "确认导出? [Y/n]: " confirm
+  printf "${CYAN}?${NC} $(t 'confirm_export') [Y/n]: "
+  read -r confirm
   if [[ "$confirm" =~ ^[Nn] ]]; then
-    warn "取消导出"
+    warn "导出已取消"
     return 1
   fi
   
-  # Perform custom export
   do_export_custom_files "$output" "${selected[@]}"
 }
 
-# Execute custom export with selected items
 do_export_custom_files() {
   local output="$1"
   shift
@@ -470,9 +530,6 @@ do_export_custom_files() {
   local exportdir="$tmpdir/openclaw-export"
   mkdir -p "$exportdir"
   
-  local file_count=0
-  
-  # Helper
   copy_item_custom() {
     local src="$1"
     local dest="$2"
@@ -491,31 +548,28 @@ do_export_custom_files() {
   
   for id in "${selected[@]}"; do
     case "$id" in
-      core)
+      1)
         copy_item_custom "$OPENCLAW_DIR/openclaw.json" "$exportdir/openclaw.json"
-        file_count=$((file_count + 1))
         ;;
-      skills)
+      2)
         if [ -d "$WORKSPACE_DIR/skills" ]; then
           copy_item_custom "$WORKSPACE_DIR/skills" "$exportdir/workspace/skills"
-          file_count=$(find "$WORKSPACE_DIR/skills" -type f 2>/dev/null | wc -l | tr -d ' ')
         fi
         ;;
-      clawhub)
+      3)
         if [ -d "$OPENCLAW_DIR/skills" ]; then
           copy_item_custom "$OPENCLAW_DIR/skills" "$exportdir/skills"
         fi
         ;;
-      extensions)
+      4)
         if [ -d "$OPENCLAW_DIR/extensions" ]; then
           copy_item_custom "$OPENCLAW_DIR/extensions" "$exportdir/extensions"
         fi
         ;;
-      agents)
+      5)
         if [ -d "$OPENCLAW_DIR/agents" ]; then
           copy_item_custom "$OPENCLAW_DIR/agents" "$exportdir/agents"
         fi
-        # Also export workspace-* directories
         if ls "$WORKSPACE_DIR"/workspace-* &>/dev/null; then
           for workspace_dir in "$WORKSPACE_DIR"/workspace-*; do
             if [ -d "$workspace_dir" ]; then
@@ -525,12 +579,12 @@ do_export_custom_files() {
           done
         fi
         ;;
-      memory)
+      6)
         if [ -d "$WORKSPACE_DIR/memory" ]; then
           copy_item_custom "$WORKSPACE_DIR/memory" "$exportdir/workspace/memory"
         fi
         ;;
-      credentials)
+      7)
         if [ -d "$OPENCLAW_DIR/credentials" ]; then
           copy_item_custom "$OPENCLAW_DIR/credentials" "$exportdir/credentials"
         fi
@@ -538,8 +592,7 @@ do_export_custom_files() {
     esac
   done
   
-  # Also include basic workspace files for core/skills
-  if [[ " ${selected[*]} " =~ " core " ]] || [[ " ${selected[*]} " =~ " skills " ]]; then
+  if [[ " ${selected[*]} " =~ " 1 " ]] || [[ " ${selected[*]} " =~ " 2 " ]]; then
     mkdir -p "$exportdir/workspace"
     for f in AGENTS.md TOOLS.md SOUL.md USER.md IDENTITY.md HEARTBEAT.md; do
       if [ -f "$WORKSPACE_DIR/$f" ]; then
@@ -548,7 +601,6 @@ do_export_custom_files() {
     done
   fi
   
-  # Generate manifest
   cat > "$exportdir/manifest.json" <<EOF
 {
   "version": "$VERSION",
@@ -563,7 +615,6 @@ do_export_custom_files() {
 }
 EOF
   
-  # Create archive
   tar -czf "$output" -C "$tmpdir" "openclaw-export"
   
   local final_size=$(du -h "$output" | cut -f1)
@@ -573,11 +624,10 @@ EOF
   echo
   echo -e "  ${BOLD}输出:${NC}     $output"
   echo -e "  ${BOLD}大小:${NC}       $final_size"
-  echo -e "  ${BOLD}项目:${NC}      ${selected[*]}"
   echo
 }
 
-# ── Export Functions ───────────────────────────────────────────────────────
+# ── Export Functions ───────────────────────────────────────────────────
 
 do_export() {
   local mode=""
@@ -624,33 +674,25 @@ EOF
     esac
   done
   
-  # Enter interactive mode if:
-  # 1. -i/--interactive flag is set
-  # 2. No --mode parameter is provided AND stdin is a terminal
   if $interactive; then
     do_export_interactive "$@"
     return $?
   fi
   
-  # If no mode specified and not interactive, default to replicate
   if [ -z "$mode" ]; then
     if [ -t 0 ]; then
-      # Terminal available, enter interactive mode
       do_export_interactive "$@"
       return $?
     else
-      # Non-interactive, default to replicate
       mode="replicate"
     fi
   fi
   
-  # Validate mode
   case "$mode" in
     replicate|standard|full|skills) ;;
     *) die "Invalid mode: $mode (use: replicate, standard, full, or skills)" ;;
   esac
   
-  # Check source exists
   [ -d "$OPENCLAW_DIR" ] || die "OpenClaw directory not found: $OPENCLAW_DIR"
   
   if $dry_run; then
@@ -670,9 +712,7 @@ EOF
   mkdir -p "$exportdir"
   
   local file_count=0
-  local total_size=0
   
-  # Helper to copy with feedback
   copy_item() {
     local src="$1"
     local dest="$2"
@@ -696,7 +736,6 @@ EOF
     return 1
   }
   
-  # Export based on mode
   case "$mode" in
     skills)
       info "Exporting skills only..."
@@ -705,20 +744,12 @@ EOF
       
     replicate)
       info "Exporting configuration (replicate mode)..."
-      
-      # Core config
       copy_item "$OPENCLAW_DIR/openclaw.json" "$exportdir/openclaw.json" "openclaw.json"
-      
-      # Workspace files
       copy_item "$WORKSPACE_DIR/skills" "$exportdir/workspace/skills" "Skills"
       copy_item "$WORKSPACE_DIR/scripts" "$exportdir/workspace/scripts" "Scripts"
-      
-      # Documentation files
       for f in AGENTS.md TOOLS.md SOUL.md USER.md IDENTITY.md HEARTBEAT.md MEMORY.md; do
         copy_item "$WORKSPACE_DIR/$f" "$exportdir/workspace/$f" "$f"
       done
-      
-      # PLANS directory (project management)
       if [ -d "$WORKSPACE_DIR/PLANS" ]; then
         copy_item "$WORKSPACE_DIR/PLANS" "$exportdir/workspace/PLANS" "PLANS"
       fi
@@ -726,35 +757,21 @@ EOF
       
     standard)
       info "Exporting configuration (standard mode)..."
-      
-      # Core config
       copy_item "$OPENCLAW_DIR/openclaw.json" "$exportdir/openclaw.json" "openclaw.json"
-      
-      # Workspace files
       copy_item "$WORKSPACE_DIR/skills" "$exportdir/workspace/skills" "Skills"
       copy_item "$WORKSPACE_DIR/scripts" "$exportdir/workspace/scripts" "Scripts"
-      
-      # Documentation files
       for f in AGENTS.md TOOLS.md SOUL.md USER.md IDENTITY.md HEARTBEAT.md MEMORY.md; do
         copy_item "$WORKSPACE_DIR/$f" "$exportdir/workspace/$f" "$f"
       done
-      
-      # PLANS directory (project management)
       if [ -d "$WORKSPACE_DIR/PLANS" ]; then
         copy_item "$WORKSPACE_DIR/PLANS" "$exportdir/workspace/PLANS" "PLANS"
       fi
-      
-      # Extensions
       if [ -d "$OPENCLAW_DIR/extensions" ]; then
         copy_item "$OPENCLAW_DIR/extensions" "$exportdir/extensions" "Extensions"
       fi
-      
-      # Agents
       if [ -d "$OPENCLAW_DIR/agents" ]; then
         copy_item "$OPENCLAW_DIR/agents" "$exportdir/agents" "Agents"
       fi
-      
-      # Workspace-* directories
       if ls "$WORKSPACE_DIR"/workspace-* &>/dev/null; then
         for workspace_dir in "$WORKSPACE_DIR"/workspace-*; do
           if [ -d "$workspace_dir" ]; then
@@ -768,21 +785,15 @@ EOF
     full)
       info "Exporting full configuration..."
       warn "This includes memory and credentials!"
-      
-      # Copy everything
       cp -R "$OPENCLAW_DIR/." "$exportdir/"
-      
-      # Remove large/ephemeral directories
       rm -rf "$exportdir/sessions" 2>/dev/null || true
       rm -rf "$exportdir/logs" 2>/dev/null || true
       rm -rf "$exportdir/tmp" 2>/dev/null || true
-      
       ok "Full export (excluding sessions/logs/tmp)"
       file_count=$(find "$exportdir" -type f | wc -l | tr -d ' ')
       ;;
   esac
   
-  # Generate manifest
   info "Generating manifest..."
   cat > "$exportdir/manifest.json" <<EOF
 {
@@ -814,13 +825,10 @@ EOF
     echo
     info "Total: $count files"
     echo
-    info "Manifest preview:"
-    cat "$exportdir/manifest.json"
     rm -rf "$tmpdir"
     return 0
   fi
   
-  # Create archive
   info "Creating archive..."
   tar -czf "$output" -C "$tmpdir" "openclaw-export"
   
@@ -834,73 +842,39 @@ EOF
   echo -e "  ${BOLD}Files:${NC}      $file_count"
   echo -e "  ${BOLD}Mode:${NC}       $mode"
   echo
-  echo -e "  ${CYAN}To import on another device:${NC}"
-  echo -e "  ./openclaw-migrate.sh import $output"
-  echo
 }
 
-# ── Import Functions ───────────────────────────────────────────────────────
+# ── Import Functions ───────────────────────────────────────────────────
 
-# Parse manifest and display interactive summary
 display_import_summary() {
   local manifest="$1"
   local export_dir="$2"
   
-  # Extract values with fallback
   local source_os source_hostname source_time version
   source_os=$(python3 -c "import json; print(json.load(open('$manifest')).get('source', {}).get('os', 'Unknown'))" 2>/dev/null || echo "Unknown")
   source_hostname=$(python3 -c "import json; print(json.load(open('$manifest')).get('source', {}).get('hostname', 'Unknown'))" 2>/dev/null || echo "Unknown")
   source_time=$(python3 -c "import json; print(json.load(open('$manifest')).get('timestamp', '').replace('T', ' ').replace('Z', ''))" 2>/dev/null || echo "Unknown")
   version=$(python3 -c "import json; print(json.load(open('$manifest')).get('version', '1.0.0'))" 2>/dev/null || echo "1.0.0")
   
-  # Check what's included
-  local has_config=false
-  local has_skills=false
-  local has_extensions=false
-  local has_agents=false
-  local has_memory=false
-  local has_credentials=false
+  local has_config=false has_skills=false has_extensions=false has_agents=false has_memory=false has_credentials=false
   
-  if [ -f "$export_dir/openclaw.json" ]; then
-    has_config=true
-  fi
+  [ -f "$export_dir/openclaw.json" ] && has_config=true
+  [ -d "$export_dir/workspace/skills" ] && has_skills=true
+  [ -d "$export_dir/extensions" ] && has_extensions=true
+  [ -d "$export_dir/workspace/AGENTS.md" ] || [ -d "$export_dir/workspace/agents" ] && has_agents=true
+  [ -d "$export_dir/memory" ] || [ -d "$export_dir/workspace/memory" ] && has_memory=true
+  [ -d "$export_dir/credentials" ] || [ -d "$export_dir/identity" ] && has_credentials=true
   
-  if [ -d "$export_dir/workspace/skills" ]; then
-    has_skills=true
-  fi
-  
-  if [ -d "$export_dir/extensions" ]; then
-    has_extensions=true
-  fi
-  
-  if [ -d "$export_dir/workspace/AGENTS.md" ] || [ -d "$export_dir/workspace/agents" ]; then
-    has_agents=true
-  fi
-  
-  if [ -d "$export_dir/memory" ]; then
-    has_memory=true
-  fi
-  
-  if [ -d "$export_dir/credentials" ] || [ -d "$export_dir/identity" ]; then
-    has_credentials=true
-  fi
-  
-  # Count skills
-  local skill_count=0
+  local skill_count=0 extension_count=0
   if [ -d "$export_dir/workspace/skills" ]; then
     skill_count=$(find "$export_dir/workspace/skills" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
   fi
-  
-  # Count extensions
-  local extension_count=0
   if [ -d "$export_dir/extensions" ]; then
     extension_count=$(find "$export_dir/extensions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
   fi
   
-  # Get archive size
   local archive_size=$(du -h "$archive" | cut -f1)
   
-  # Display summary
   echo
   echo -e "${BOLD}📦 归档内容摘要${NC}"
   echo
@@ -951,18 +925,15 @@ display_import_summary() {
   echo
 }
 
-# Check if plugin exists
 check_plugin_exists() {
   local plugin_name="$1"
   
-  # Check if plugin is installed
   if openclaw plugins list 2>/dev/null | grep -q "$plugin_name"; then
     return 0
   fi
   return 1
 }
 
-# Install missing plugin
 install_plugin() {
   local plugin_name="$1"
   
@@ -977,7 +948,6 @@ install_plugin() {
   fi
 }
 
-# Detect and install missing plugins from config
 detect_missing_plugins() {
   local config_file="$1"
   local missing_plugins=()
@@ -986,7 +956,6 @@ detect_missing_plugins() {
     return 0
   fi
   
-  # Extract plugin names from config using grep
   local plugins=$(grep -oE '"openclaw-[a-z0-9-]+"' "$config_file" 2>/dev/null | sort -u | tr -d '"')
   
   if [ -z "$plugins" ]; then
@@ -999,12 +968,10 @@ detect_missing_plugins() {
     fi
   done
   
-  # Print missing plugins
   if [ ${#missing_plugins[@]} -gt 0 ]; then
     echo
     warn "检测到以下插件未安装:"
     for plugin in "${missing_plugins[@]}"; do
-      # Get plugin description from name
       local desc=""
       case "$plugin" in
         openclaw-lark) desc="飞书" ;;
@@ -1026,7 +993,8 @@ do_import() {
   local archive="${1:-}"
   local force=false
   local no_backup=false
-  local install_deps=false
+  local install
+_deps=false
   local interactive=true
   
   for arg in "$@"; do
@@ -1059,7 +1027,6 @@ EOF
   [ -z "$archive" ] && die "Usage: $SCRIPT_NAME import <archive.tar.gz>"
   [ -f "$archive" ] || die "File not found: $archive"
   
-  # Validate archive
   if ! tar -tzf "$archive" &>/dev/null; then
     die "Invalid archive: not a valid gzip tar file"
   fi
@@ -1076,10 +1043,8 @@ EOF
   [ -d "$exportdir" ] || die "Invalid archive: missing openclaw-export directory"
   [ -f "$exportdir/manifest.json" ] || die "Invalid archive: missing manifest.json"
   
-  # Display interactive summary
   display_import_summary "$exportdir/manifest.json" "$exportdir"
   
-  # Interactive import choice
   if $interactive; then
     echo -e "${BOLD}? 是否导入?${NC}"
     echo "  ❯ 是，导入并安装缺失插件"
@@ -1108,7 +1073,6 @@ EOF
     done
   fi
   
-  # Check dependencies
   info "Checking dependencies..."
   
   if ! check_node; then
@@ -1129,23 +1093,19 @@ EOF
     fi
   fi
   
-  # Backup existing config
   if [ -d "$OPENCLAW_DIR" ] && ! $no_backup; then
     local backup="$HOME/openclaw-backup-$TIMESTAMP.tar.gz"
     info "Backing up existing configuration..."
     tar -czf "$backup" -C "$HOME" ".openclaw" 2>/dev/null && ok "Backup: $backup" || warn "Backup failed, continuing anyway"
   fi
   
-  # Import files
   mkdir -p "$OPENCLAW_DIR"
   info "Importing files..."
   
-  # Config
   if [ -f "$exportdir/openclaw.json" ]; then
     cp "$exportdir/openclaw.json" "$OPENCLAW_DIR/openclaw.json"
     ok "openclaw.json"
     
-    # Check and prompt for missing plugins
     if $install_deps; then
       if detect_missing_plugins "$OPENCLAW_DIR/openclaw.json"; then
         if $interactive; then
@@ -1155,7 +1115,6 @@ EOF
             warn "跳过插件安装"
           else
             info "安装缺失插件..."
-            # Install each missing plugin
             local plugins=$(grep -oE '"openclaw-[a-z0-9-]+"' "$OPENCLAW_DIR/openclaw.json" 2>/dev/null | sort -u | tr -d '"')
             for plugin in $plugins; do
               if ! check_plugin_exists "$plugin"; then
@@ -1165,7 +1124,6 @@ EOF
             ok "插件安装完成"
           fi
         else
-          # Auto install in non-interactive mode
           info "安装缺失插件..."
           local plugins=$(grep -oE '"openclaw-[a-z0-9-]+"' "$OPENCLAW_DIR/openclaw.json" 2>/dev/null | sort -u | tr -d '"')
           for plugin in $plugins; do
@@ -1181,10 +1139,8 @@ EOF
     fi
   fi
   
-  # Workspace
   if [ -d "$exportdir/workspace" ]; then
     mkdir -p "$WORKSPACE_DIR"
-    # Copy each item individually to handle existing directories
     for item in "$exportdir/workspace"/*; do
       if [ -e "$item" ]; then
         local item_name=$(basename "$item")
@@ -1195,7 +1151,6 @@ EOF
     ok "Workspace files"
   fi
   
-  # Additional directories (from full export)
   for d in extensions identity memory credentials; do
     if [ -d "$exportdir/$d" ]; then
       cp -R "$exportdir/$d" "$OPENCLAW_DIR/$d"
@@ -1203,7 +1158,6 @@ EOF
     fi
   done
   
-  # Update version to archive version
   local archive_version=$(python3 -c "import json; print(json.load(open('$exportdir/manifest.json')).get('version', '1.0.0'))" 2>/dev/null || echo "1.0.0")
   info "更新版本到 $archive_version"
   
@@ -1227,14 +1181,12 @@ do_doctor() {
   
   local issues=0
   
-  # System info
   echo -e "${BOLD}System Information${NC}"
   echo -e "  OS:         $(detect_os)"
   echo -e "  Hostname:   $(hostname)"
   echo -e "  User:       ${USER:-unknown}"
   echo
   
-  # Node.js
   echo -e "${BOLD}Node.js${NC}"
   if check_node; then
     echo -e "  Version:    $(node -v)"
@@ -1245,7 +1197,6 @@ do_doctor() {
   fi
   echo
   
-  # npm
   echo -e "${BOLD}npm${NC}"
   if check_npm; then
     echo -e "  Version:    $(npm --version)"
@@ -1256,7 +1207,6 @@ do_doctor() {
   fi
   echo
   
-  # OpenClaw
   echo -e "${BOLD}OpenClaw${NC}"
   if check_openclaw; then
     echo -e "  Version:    $(openclaw --version 2>/dev/null || echo 'unknown')"
@@ -1267,7 +1217,6 @@ do_doctor() {
   fi
   echo
   
-  # OpenClaw directory
   echo -e "${BOLD}Configuration${NC}"
   if [ -d "$OPENCLAW_DIR" ]; then
     echo -e "  Directory:  $OPENCLAW_DIR ${GREEN}✓${NC}"
@@ -1282,7 +1231,6 @@ do_doctor() {
     if [ -d "$WORKSPACE_DIR" ]; then
       echo -e "  Workspace:  ${GREEN}✓${NC}"
       
-      # Count skills
       if [ -d "$WORKSPACE_DIR/skills" ]; then
         local skill_count=$(find "$WORKSPACE_DIR/skills" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
         echo -e "  Skills:     $skill_count installed"
@@ -1296,7 +1244,6 @@ do_doctor() {
   fi
   echo
   
-  # Summary
   echo -e "${BOLD}Summary${NC}"
   if [ $issues -eq 0 ]; then
     echo -e "  ${GREEN}All checks passed! ✓${NC}"
@@ -1339,11 +1286,9 @@ do_self_update() {
   read -rp "Update now? [Y/n] " ans
   [[ "$ans" =~ ^[Nn] ]] && return 0
   
-  # Download new version
   local tmp_script=$(mktemp)
   curl -fsSL "$REPO_RAW_URL/openclaw-migrate.sh" -o "$tmp_script" || die "Failed to download update"
   
-  # Replace
   mv "$tmp_script" "$script_path"
   chmod +x "$script_path"
   
@@ -1364,6 +1309,7 @@ ${BOLD}Commands:${NC}
   doctor        Run system diagnostics
   version       Show version information
   update        Update to latest version
+  lang          Change language / 更改语言
   help          Show this help message
 
 ${BOLD}Export Options:${NC}
@@ -1399,6 +1345,9 @@ ${BOLD}Examples:${NC}
   # Check system health
   $SCRIPT_NAME doctor
 
+  # Change language
+  $SCRIPT_NAME lang
+
 ${BOLD}Repository:${NC} $REPO_URL
 ${BOLD}License:${NC} MIT
 
@@ -1423,6 +1372,9 @@ case "${1:-}" in
     ;;
   update|--update|-u)
     do_self_update
+    ;;
+  lang|--lang|-l)
+    do_select_language
     ;;
   help|--help|-h)
     usage

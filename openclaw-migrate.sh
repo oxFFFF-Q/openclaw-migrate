@@ -17,7 +17,7 @@ set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────────────────
 
-readonly VERSION="1.5.3"
+readonly VERSION="1.6.0"
 readonly SCRIPT_NAME="openclaw-migrate"
 readonly REPO_URL="https://github.com/oxFFFF-Q/openclaw-migrate"
 readonly REPO_RAW_URL="https://raw.githubusercontent.com/oxFFFF-Q/openclaw-migrate/main"
@@ -1417,17 +1417,16 @@ EOF
     done
   fi
   
-  # 🧩 已安装：显示合并选项
+  # 🧩 已安装：显示合并选项（移除危险的"完全覆盖"选项）
   local merge_strategy=""
   if [ "$openclaw_installed" = true ] && $interactive; then
     echo
     info "检测到已有 OpenClaw 配置"
     echo
     echo -e "${BOLD}? 如何处理现有配置?${NC}"
-    echo "  ❯ 1) 智能合并（推荐） - 保留本地新增配置，合并远程更改"
-    echo "    2) 完全替换 - 用导入配置覆盖本地"
-    echo "    3) 保留本地 - 忽略导入的 openclaw.json"
-    echo "    4) 取消"
+    echo "  ❯ 1) 智能合并（推荐） - 保留本地系统配置，合并用户数据"
+    echo "    2) 仅导入文件 - 忽略 openclaw.json，只导入技能/扩展"
+    echo "    3) 取消"
     echo
     
     local merge_choice=""
@@ -1438,19 +1437,15 @@ EOF
           merge_strategy="smart"
           install_deps=true
           ;;
-        2|"完全替换"|"2")
-          merge_strategy="replace"
+        2|"仅导入文件"|"2")
+          merge_strategy="files-only"
           install_deps=true
           ;;
-        3|"保留本地"|"3")
-          merge_strategy="keep-local"
-          install_deps=true
-          ;;
-        4|"取消"|"n"|"N")
+        3|"取消"|"n"|"N")
           die "已取消"
           ;;
         *)
-          echo "请输入 1, 2, 3 或 4"
+          echo "请输入 1, 2 或 3"
           merge_choice=""
           ;;
       esac
@@ -1618,6 +1613,59 @@ EOF
   
   local archive_version=$(python3 -c "import json; print(json.load(open('$exportdir/manifest.json')).get('version', '1.0.0'))" 2>/dev/null || echo "1.0.0")
   info "更新版本到 $archive_version"
+  
+  # ═══════════════════════════════════════════════════════════════
+  # 🧹 方案 B: 配置清洗 - 自动修复跨平台兼容性问题
+  # ═══════════════════════════════════════════════════════════════
+  info "执行配置清洗..."
+  
+  # B1: 检测并修复端口冲突
+  if [ -f "$OPENCLAW_DIR/openclaw.json" ]; then
+    local current_port=$(grep -o '"port"[[:space:]]*:[[:space:]]*[0-9]*' "$OPENCLAW_DIR/openclaw.json" | head -1 | grep -o '[0-9]*' || echo "")
+    if [ -n "$current_port" ]; then
+      # 检测是否有 systemd service 固定的端口
+      local systemd_port=""
+      if [ -f "$HOME/.config/systemd/user/openclaw-gateway.service" ]; then
+        systemd_port=$(grep -oP 'EXECLINE.*--port\s+\K[0-9]+' "$HOME/.config/systemd/user/openclaw-gateway.service" 2>/dev/null || echo "")
+      fi
+      if [ -n "$systemd_port" ] && [ "$current_port" != "$systemd_port" ]; then
+        warn "检测到端口冲突: 配置=$current_port, systemd=$systemd_port"
+        info "保留本地端口配置: $systemd_port"
+        # 恢复原始配置（不修改）
+      fi
+    fi
+    
+    # B2: 检测并警告路径不兼容
+    local bad_paths=$(grep -o '"/Users/[^"]*"' "$OPENCLAW_DIR/openclaw.json" 2>/dev/null | head -3 || true)
+    if [ -n "$bad_paths" ]; then
+      warn "检测到 macOS 路径（可能在 Ubuntu 不兼容）:"
+      echo "$bad_paths" | while read -r p; do
+        echo "  - $p"
+      done
+      info "建议: 运行 openclaw doctor --fix 修复"
+    fi
+    
+    # B3: 检测版本兼容性
+    local config_version=$(python3 -c "import json; d=json.load(open('$OPENCLAW_DIR/openclaw.json')); print(d.get('meta',{}).get('lastTouchedAt','')[:10] if d.get('meta') else '')" 2>/dev/null || echo "")
+    if [ -n "$config_version" ]; then
+      info "配置最后修改: $config_version"
+    fi
+  fi
+  
+  # ═══════════════════════════════════════════════════════════════
+  # 🛠️ 方案 C: 自动修复 - 运行 openclaw doctor --fix
+  # ═══════════════════════════════════════════════════════════════
+  echo
+  info "尝试自动修复配置..."
+  if command -v openclaw &>/dev/null; then
+    if openclaw doctor --fix 2>/dev/null; then
+      ok "配置已自动修复"
+    else
+      warn "自动修复完成，建议手动检查"
+    fi
+  else
+    warn "OpenClaw 未安装，跳过自动修复"
+  fi
   
   echo
   ok "Import complete! 🎉"

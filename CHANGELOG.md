@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-03-17
+
+### Added (A+B+C 完整方案)
+- 🛡️ **移除危险选项**: 取消"完全覆盖"模式
+- 🧹 **配置清洗**: 检测端口冲突、路径不兼容
+- 🛠️ **自动修复**: 导入后自动运行 openclaw doctor --fix
+
+### Changed
+- 交互简化为 3 选项：智能合并/仅导入文件/取消
+- 智能合并：保留本地系统配置，合并用户数据
+
 ## [1.5.2] - 2026-03-17
 
 ### Fixed

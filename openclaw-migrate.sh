@@ -17,7 +17,7 @@ set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────────────────
 
-readonly VERSION="1.5.1"
+readonly VERSION="1.5.2"
 readonly SCRIPT_NAME="openclaw-migrate"
 readonly REPO_URL="https://github.com/oxFFFF-Q/openclaw-migrate"
 readonly REPO_RAW_URL="https://raw.githubusercontent.com/oxFFFF-Q/openclaw-migrate/main"

@@ -1982,6 +1982,11 @@ ${BOLD}License:${NC} MIT
 EOF
 }
 
+# Auto-detect: if first arg is a .tar.gz file, treat as import
+if [[ "${1:-}" =~ \.tar\.gz$ ]] && [ -f "${1:-}" ]; then
+  set -- import "$@"
+fi
+
 # Parse command
 case "${1:-}" in
   export)

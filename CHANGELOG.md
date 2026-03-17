@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-03-17
+
+### Added (方案 A: 导出/导入双向路径处理)
+- 🎯 **导出时路径变量化**: 将 `/Users/eva/.openclaw/...` 转换为 `${OPENCLAW_HOME}/...`
+- 🎯 **导入时变量本地化**: 将 `${OPENCLAW_HOME}/...` 转换为当前系统路径
+- 🔄 **兼容旧归档**: 仍支持绝对路径转换（向后兼容）
+
+### Changed
+- 归档完全平台无关，跨系统迁移更可靠
+
+### Fixed
+- 修复 macOS → Ubuntu 路径不兼容问题
+
 ## [1.7.0] - 2026-03-17
 
 ### Added (关键修复！)

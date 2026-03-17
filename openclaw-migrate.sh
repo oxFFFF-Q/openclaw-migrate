@@ -17,7 +17,7 @@ set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────────────────
 
-readonly VERSION="1.7.0"
+readonly VERSION="2.0.0"
 readonly SCRIPT_NAME="openclaw-migrate"
 readonly REPO_URL="https://github.com/oxFFFF-Q/openclaw-migrate"
 readonly REPO_RAW_URL="https://raw.githubusercontent.com/oxFFFF-Q/openclaw-migrate/main"
@@ -1062,6 +1062,36 @@ EOF
         local size=$(du -sh "$src" 2>/dev/null | cut -f1)
         $verbose && ok "$name ($size)"
       fi
+      
+      # 🎯 方案 A: 导出时路径变量化
+      # 如果复制的是 openclaw.json，将其路径变量化
+      if [[ "$dest" == *"openclaw.json" ]] && [ -f "$dest" ]; then
+        info "Variable path in $name..."
+        local_user=$(whoami)
+        # 替换绝对路径为 ${OPENCLAW_HOME} 变量
+        python3 << PYEOF
+import json
+import os
+import re
+
+with open('$dest', 'r') as f:
+    content = f.read()
+
+# 检测 home 目录路径
+home_paths = [
+    (os.path.expanduser('~'), '\${OPENCLAW_HOME}'),
+]
+
+# 替换所有匹配的路径
+for old, new in home_paths:
+    if old and old != new:
+        content = content.replace(old, new)
+
+with open('$dest', 'w') as f:
+    f.write(content)
+PYEOF
+      fi
+      
       file_count=$((file_count + 1))
       return 0
     fi
@@ -1675,43 +1705,29 @@ target_home = "$target_home"
 
 # 读取配置
 with open(config_file, 'r') as f:
-    config = json.load(f)
+    content = f.read()
 
 converted = 0
 
-def convert_value(val):
-    global converted
-    if isinstance(val, str):
-        # 转换 macOS 路径: /Users/eva/.openclaw/... → /home/ubuntu/.openclaw/...
-        if val.startswith(f'/Users/{source_user}'):
-            new_val = val.replace(f'/Users/{source_user}', target_home)
-            converted += 1
-            return new_val
-        # 转换其他 home 路径
-        elif '/.openclaw/' in val:
-            parts = val.split('/.openclaw/')
-            if len(parts) == 2:
-                new_val = f"{target_home}/.openclaw/{parts[1]}"
-                converted += 1
-                return new_val
-    return val
+# 🎯 方案 A: 导入时变量本地化
+# 优先处理 ${OPENCLAW_HOME} 变量
+if '${OPENCLAW_HOME}' in content:
+    content = content.replace('${OPENCLAW_HOME}', target_home)
+    converted += content.count(target_home)
+    print(f"Converted {converted} variable paths")
 
-def recursive_convert(obj):
-    if isinstance(obj, dict):
-        return {k: recursive_convert(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [recursive_convert(item) for item in obj]
-    else:
-        return convert_value(obj)
-
-# 执行转换
-config = recursive_convert(config)
+# 备用：处理绝对路径（兼容旧归档）
+elif source_user:
+    # 转换 macOS 路径: /Users/eva/.openclaw/... → /home/ubuntu/.openclaw/...
+    content = content.replace(f'/Users/{source_user}', target_home)
+    converted += content.count(target_home)
+    print(f"Converted {converted} absolute paths")
 
 # 写回配置
 with open(config_file, 'w') as f:
-    json.dump(config, f, indent=2, ensure_ascii=False)
+    f.write(content)
 
-print(f"Converted {converted} paths")
+print(f"Total: {converted} paths converted")
 PYEOF
       
       # 验证转换后的 JSON 有效

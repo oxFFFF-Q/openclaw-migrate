@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-03-17
+
+### Added
+- 🧠 智能导入：自动检测 OpenClaw 安装状态
+- 📦 新系统：支持一键安装 OpenClaw 并导入配置
+- 🔄 已安装：提供合并/替换/保留本地三种选项
+- 🎯 统一用法：只需传归档文件路径即可
+
+### Changed
+- 导入命令不再需要 `import` 关键字（自动检测 .tar.gz 文件）
+
 ## [1.5.0] - 2026-03-17
 
 ### Added
